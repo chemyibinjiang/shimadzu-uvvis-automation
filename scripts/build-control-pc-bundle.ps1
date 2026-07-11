@@ -8,7 +8,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $git = Get-Command 'git.exe' -ErrorAction Stop
 
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-    $OutputPath = Join-Path $repoRoot 'dist\shimadzu-uvvis-control-pc-0.3.0.zip'
+    $OutputPath = Join-Path $repoRoot 'dist\shimadzu-uvvis-control-pc-0.4.0.zip'
 }
 $output = [System.IO.Path]::GetFullPath($OutputPath)
 $outputDirectory = Split-Path -Parent $output

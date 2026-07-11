@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
 from types import MappingProxyType
-from typing import Final, Mapping, TypeAlias
+from typing import Any, Callable, Final, Iterator, Mapping, Sequence, TypeAlias
 
 from .audit import AuditRecorder, write_json_atomic
 from .locking import FileLockTimeoutError, InterProcessFileLock
@@ -24,6 +27,15 @@ MODE_FILE_NAMES: Final[dict[str, tuple[str, str]]] = {
     "photometric": ("PHO_CMD.txt", "PHO_RES.txt"),
     "time_course": ("TMC_CMD.txt", "TMC_RES.txt"),
 }
+
+
+def _workflow_locked(method: Callable[..., Any]) -> Callable[..., Any]:
+    @wraps(method)
+    def wrapped(self: LabSolutionsClient, *args: Any, **kwargs: Any) -> Any:
+        with self._workflow_lock():
+            return method(self, *args, **kwargs)
+
+    return wrapped
 
 
 class LabSolutionsError(RuntimeError):
@@ -51,6 +63,32 @@ class LabSolutionsProtocolError(LabSolutionsError):
 
 class LabSolutionsTimeoutError(LabSolutionsError):
     """Raised when LabSolutions or an export file does not arrive in time."""
+
+
+class SpectrumScheduleOverrunError(LabSolutionsError):
+    """Raised before a repeated Spectrum would start outside its tolerance."""
+
+    def __init__(
+        self,
+        *,
+        index: int,
+        sample_id: str,
+        scheduled_offset_seconds: float,
+        actual_offset_seconds: float,
+        tolerance_seconds: float,
+    ) -> None:
+        self.index = index
+        self.sample_id = sample_id
+        self.scheduled_offset_seconds = scheduled_offset_seconds
+        self.actual_offset_seconds = actual_offset_seconds
+        self.tolerance_seconds = tolerance_seconds
+        lateness = actual_offset_seconds - scheduled_offset_seconds
+        super().__init__(
+            f"Spectrum series run {index} ({sample_id}) is {lateness:.3f}s late, "
+            f"exceeding the {tolerance_seconds:.3f}s tolerance. The next "
+            "measurement was not started. Increase --interval-seconds only after "
+            "checking the completed scan and export duration."
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +127,41 @@ class SpectrumRunResult:
 
     feedback: tuple[Feedback, ...]
     export_path: Path | None
+
+
+@dataclass(frozen=True, slots=True)
+class SpectrumSeriesSample:
+    """One uniquely named acquisition in a repeated Spectrum series."""
+
+    sample_name: str
+    sample_id: str
+    data_file: Path | None = None
+    export_pattern: str = "*.csv"
+
+
+@dataclass(frozen=True, slots=True)
+class SpectrumSeriesPointResult:
+    """Timing and output for one completed repeated Spectrum acquisition."""
+
+    index: int
+    sample_id: str
+    scheduled_offset_seconds: float
+    actual_start_offset_seconds: float
+    start_lateness_seconds: float
+    started_at_utc: datetime
+    completed_at_utc: datetime
+    elapsed_seconds: float
+    feedback: tuple[Feedback, ...]
+    export_path: Path | None
+
+
+@dataclass(frozen=True, slots=True)
+class SpectrumSeriesResult:
+    """Result of a start-to-start scheduled Spectrum series."""
+
+    preparation_feedback: tuple[Feedback, ...]
+    runs: tuple[SpectrumSeriesPointResult, ...]
+    finalization_feedback: tuple[Feedback, ...]
 
 
 def parse_exchange_text(text: str) -> dict[str, str]:
@@ -198,13 +271,62 @@ class LabSolutionsClient:
         self.command_path = self.command_dir / command_name
         self.feedback_path = self.command_dir / feedback_name
         self.lock_path = self.command_dir / f".shimadzu_uvvis_{mode}.lock"
+        self.workflow_lock_path = (
+            self.command_dir / f".shimadzu_uvvis_{mode}.workflow.lock"
+        )
         self.recovery_path = (
             self.command_dir / f".shimadzu_uvvis_{mode}.recovery.json"
         )
         self._lock = threading.Lock()
+        self._workflow_state_lock = threading.Lock()
+        self._workflow_owner: int | None = None
+        self._workflow_depth = 0
         self.audit_recorder = AuditRecorder(audit_dir) if audit_dir is not None else None
         self.audit_warnings: list[str] = []
 
+    @contextmanager
+    def _workflow_lock(self) -> Iterator[None]:
+        """Reserve this LabSolutions mode across a complete high-level workflow."""
+
+        thread_id = threading.get_ident()
+        with self._workflow_state_lock:
+            reentrant = self._workflow_owner == thread_id
+            if reentrant:
+                self._workflow_depth += 1
+
+        if reentrant:
+            try:
+                yield
+            finally:
+                with self._workflow_state_lock:
+                    self._workflow_depth -= 1
+            return
+
+        process_lock = InterProcessFileLock(
+            self.workflow_lock_path,
+            timeout=self.lock_timeout,
+            poll_interval=min(self.poll_interval, 0.1),
+        )
+        try:
+            process_lock.acquire()
+        except FileLockTimeoutError as exc:
+            raise LabSolutionsBusyError(
+                "Another controller process owns the LabSolutions workflow for "
+                f"this mode: {self.command_dir}"
+            ) from exc
+
+        try:
+            with self._workflow_state_lock:
+                self._workflow_owner = thread_id
+                self._workflow_depth = 1
+            yield
+        finally:
+            with self._workflow_state_lock:
+                self._workflow_owner = None
+                self._workflow_depth = 0
+            process_lock.release()
+
+    @_workflow_locked
     def send_command(
         self,
         command: int,
@@ -574,6 +696,7 @@ class LabSolutionsClient:
             f"matching {pattern!r} in {directory}"
         )
 
+    @_workflow_locked
     def run_spectrum(
         self,
         *,
@@ -642,3 +765,163 @@ class LabSolutionsClient:
             feedback.append(self.send_command(2))
 
         return SpectrumRunResult(tuple(feedback), export_path)
+
+    @_workflow_locked
+    def run_spectrum_series(
+        self,
+        *,
+        method_file: str | Path,
+        samples: Sequence[SpectrumSeriesSample],
+        interval_seconds: float,
+        overrun_tolerance_seconds: float = 1.0,
+        measurement_mode: int = 2,
+        discharge: bool = False,
+        correction: Mapping[str, ParameterValue] | None = None,
+        connect: bool = False,
+        disconnect: bool = False,
+        export_dir: str | Path | None = None,
+        export_timeout: float | None = None,
+        stable_seconds: float = 2.0,
+    ) -> SpectrumSeriesResult:
+        """Run full spectra at a monotonic Command=111 start-to-start cadence."""
+
+        if self.mode != "spectrum":
+            raise LabSolutionsProtocolError(
+                "run_spectrum_series requires a client configured with mode='spectrum'"
+            )
+        if measurement_mode not in (1, 2):
+            raise ValueError("measurement_mode must be 1 or 2")
+        if not math.isfinite(interval_seconds) or interval_seconds <= 0:
+            raise ValueError("interval_seconds must be a finite number greater than zero")
+        if (
+            not math.isfinite(overrun_tolerance_seconds)
+            or overrun_tolerance_seconds < 0
+        ):
+            raise ValueError(
+                "overrun_tolerance_seconds must be a finite non-negative number"
+            )
+
+        scheduled_samples = tuple(samples)
+        if not scheduled_samples:
+            raise ValueError("samples cannot be empty")
+        sample_ids = [sample.sample_id for sample in scheduled_samples]
+        if len(set(sample_ids)) != len(sample_ids):
+            raise ValueError("series sample IDs must be unique")
+        for sample in scheduled_samples:
+            if not sample.sample_name:
+                raise ValueError("series sample names cannot be empty")
+            if not sample.sample_id:
+                raise ValueError("series sample IDs cannot be empty")
+            if not sample.export_pattern:
+                raise ValueError("series export patterns cannot be empty")
+
+        preparation: list[Feedback] = [self.send_command(0)]
+        if connect:
+            preparation.append(self.send_command(1))
+        preparation.append(
+            self.send_command(100, ParameterFileName=Path(method_file))
+        )
+        if correction:
+            preparation.append(self.send_command(21, **dict(correction)))
+
+        run_results: list[SpectrumSeriesPointResult] = []
+        series_epoch: float | None = None
+
+        def ensure_on_schedule(
+            *, index: int, sample_id: str, target: float, epoch: float
+        ) -> None:
+            actual = time.monotonic()
+            if actual - target > overrun_tolerance_seconds:
+                raise SpectrumScheduleOverrunError(
+                    index=index,
+                    sample_id=sample_id,
+                    scheduled_offset_seconds=target - epoch,
+                    actual_offset_seconds=actual - epoch,
+                    tolerance_seconds=overrun_tolerance_seconds,
+                )
+
+        for offset_index, sample in enumerate(scheduled_samples):
+            index = offset_index + 1
+            if series_epoch is not None:
+                target = series_epoch + offset_index * interval_seconds
+                ensure_on_schedule(
+                    index=index,
+                    sample_id=sample.sample_id,
+                    target=target,
+                    epoch=series_epoch,
+                )
+
+            sample_feedback = self.send_command(
+                110,
+                DataFileName=sample.data_file,
+                SampleName=sample.sample_name,
+                SampleID=sample.sample_id,
+            )
+
+            if series_epoch is None:
+                series_epoch = time.monotonic()
+                target = series_epoch
+            else:
+                target = series_epoch + offset_index * interval_seconds
+                ensure_on_schedule(
+                    index=index,
+                    sample_id=sample.sample_id,
+                    target=target,
+                    epoch=series_epoch,
+                )
+                remaining = target - time.monotonic()
+                if remaining > 0:
+                    time.sleep(remaining)
+                ensure_on_schedule(
+                    index=index,
+                    sample_id=sample.sample_id,
+                    target=target,
+                    epoch=series_epoch,
+                )
+
+            started_monotonic = time.monotonic()
+            started_at_utc = datetime.now(timezone.utc)
+            measurement_started_at = time.time()
+            measurement_feedback = self.send_command(
+                111,
+                MeasurementMode=measurement_mode,
+                Discharge=discharge,
+            )
+
+            export_path: Path | None = None
+            if export_dir is not None:
+                export_path = self.wait_for_export(
+                    export_dir,
+                    pattern=sample.export_pattern,
+                    since=measurement_started_at,
+                    timeout=export_timeout,
+                    stable_seconds=stable_seconds,
+                )
+
+            completed_at_utc = datetime.now(timezone.utc)
+            actual_offset = started_monotonic - series_epoch
+            scheduled_offset = offset_index * interval_seconds
+            run_results.append(
+                SpectrumSeriesPointResult(
+                    index=index,
+                    sample_id=sample.sample_id,
+                    scheduled_offset_seconds=scheduled_offset,
+                    actual_start_offset_seconds=actual_offset,
+                    start_lateness_seconds=max(0.0, actual_offset - scheduled_offset),
+                    started_at_utc=started_at_utc,
+                    completed_at_utc=completed_at_utc,
+                    elapsed_seconds=time.monotonic() - started_monotonic,
+                    feedback=(sample_feedback, measurement_feedback),
+                    export_path=export_path,
+                )
+            )
+
+        finalization: list[Feedback] = []
+        if disconnect:
+            finalization.append(self.send_command(2))
+
+        return SpectrumSeriesResult(
+            preparation_feedback=tuple(preparation),
+            runs=tuple(run_results),
+            finalization_feedback=tuple(finalization),
+        )

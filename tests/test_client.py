@@ -14,6 +14,8 @@ from shimadzu_uvvis.client import (
     LabSolutionsCommandError,
     LabSolutionsRecoveryRequiredError,
     LabSolutionsTimeoutError,
+    SpectrumScheduleOverrunError,
+    SpectrumSeriesSample,
     parse_exchange_text,
 )
 
@@ -156,6 +158,101 @@ class LabSolutionsClientTests(unittest.TestCase):
         self.assertEqual(measurement_fields["MeasurementMode"], "2")
         self.assertEqual(measurement_fields["Discharge"], "OFF")
         self.assertEqual(result.export_path, export_dir / "run_001.csv")
+
+    def test_spectrum_series_uses_start_to_start_interval(self) -> None:
+        commands: list[int] = []
+        measurement_times: list[float] = []
+        blocked_competing_commands: list[bool] = []
+        competing_client = LabSolutionsClient(
+            self.root,
+            timeout=1.0,
+            poll_interval=0.005,
+            lock_timeout=0.03,
+        )
+
+        def responder() -> None:
+            while len(commands) < 6:
+                if not self.client.command_path.exists():
+                    time.sleep(0.002)
+                    continue
+                fields = parse_exchange_text(
+                    self.client.command_path.read_text(encoding="utf-8")
+                )
+                command = int(fields["Command"])
+                commands.append(command)
+                if command == 111:
+                    measurement_times.append(time.monotonic())
+                self.client.command_path.unlink()
+                self.client.feedback_path.write_text(
+                    f'Command={command}\r\nReturn=0\r\nError=""\r\n',
+                    encoding="utf-8",
+                )
+                if command == 111 and len(measurement_times) == 1:
+                    try:
+                        competing_client.send_command(0)
+                    except LabSolutionsBusyError:
+                        blocked_competing_commands.append(True)
+
+        thread = threading.Thread(target=responder, daemon=True)
+        thread.start()
+        result = self.client.run_spectrum_series(
+            method_file=r"C:\UVVis-Data\Parameter\scan.vspm",
+            samples=(
+                SpectrumSeriesSample("growth", "growth_0001"),
+                SpectrumSeriesSample("growth", "growth_0002"),
+            ),
+            interval_seconds=0.1,
+            overrun_tolerance_seconds=0.05,
+        )
+        thread.join(timeout=1.0)
+
+        self.assertEqual(commands, [0, 100, 110, 111, 110, 111])
+        self.assertEqual([run.sample_id for run in result.runs], [
+            "growth_0001",
+            "growth_0002",
+        ])
+        self.assertGreaterEqual(measurement_times[1] - measurement_times[0], 0.08)
+        self.assertEqual(blocked_competing_commands, [True])
+        self.assertAlmostEqual(
+            result.runs[1].actual_start_offset_seconds, 0.1, delta=0.05
+        )
+
+    def test_spectrum_series_stops_before_late_measurement(self) -> None:
+        commands: list[int] = []
+
+        def responder() -> None:
+            while len(commands) < 4:
+                if not self.client.command_path.exists():
+                    time.sleep(0.002)
+                    continue
+                fields = parse_exchange_text(
+                    self.client.command_path.read_text(encoding="utf-8")
+                )
+                command = int(fields["Command"])
+                commands.append(command)
+                self.client.command_path.unlink()
+                if command == 111:
+                    time.sleep(0.05)
+                self.client.feedback_path.write_text(
+                    f'Command={command}\r\nReturn=0\r\nError=""\r\n',
+                    encoding="utf-8",
+                )
+
+        thread = threading.Thread(target=responder, daemon=True)
+        thread.start()
+        with self.assertRaises(SpectrumScheduleOverrunError):
+            self.client.run_spectrum_series(
+                method_file=r"C:\UVVis-Data\Parameter\scan.vspm",
+                samples=(
+                    SpectrumSeriesSample("growth", "growth_0001"),
+                    SpectrumSeriesSample("growth", "growth_0002"),
+                ),
+                interval_seconds=0.01,
+                overrun_tolerance_seconds=0.001,
+            )
+        thread.join(timeout=1.0)
+
+        self.assertEqual(commands, [0, 100, 110, 111])
 
     def test_two_clients_cannot_send_at_the_same_time(self) -> None:
         first = LabSolutionsClient(

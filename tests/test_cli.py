@@ -127,6 +127,81 @@ directory = "{(root / 'audit').as_posix()}"
             self.assertEqual(off_grid_exit, 1)
             self.assertIn("not on profile", off_grid["error"])
 
+    def test_series_plan_reports_start_to_start_and_method_timing(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            for name in ("control", "export", "data", "audit", "methods"):
+                (root / name).mkdir()
+            method = root / "methods" / "test.vspm"
+            method.write_text("simulated", encoding="utf-8")
+            config = root / "control.toml"
+            config.write_text(
+                f"""
+[labsolutions]
+command_dir = "{(root / 'control').as_posix()}"
+
+[export]
+directory = "{(root / 'export').as_posix()}"
+pattern = "{{sample_id}}*.csv"
+
+[spectrum]
+method_file = "{method.as_posix()}"
+data_dir = "{(root / 'data').as_posix()}"
+
+[scan_profiles.default]
+method_file = "{method.as_posix()}"
+start_nm = 300.0
+stop_nm = 900.0
+step_nm = 1.0
+scan_speed_nm_per_min = 600.0
+
+[audit]
+directory = "{(root / 'audit').as_posix()}"
+""".strip(),
+                encoding="utf-8",
+            )
+            output = io.StringIO()
+
+            with contextlib.redirect_stdout(output):
+                exit_code = main(
+                    [
+                        "--config",
+                        str(config),
+                        "series",
+                        "--sample-name",
+                        "growth",
+                        "--series-id",
+                        "growth_001",
+                        "--profile",
+                        "default",
+                        "--count",
+                        "3",
+                        "--interval-seconds",
+                        "75",
+                    ]
+                )
+
+            payload = json.loads(output.getvalue())
+            self.assertEqual(exit_code, 0)
+            self.assertFalse(payload["executed"])
+            self.assertEqual(
+                [run["run_id"] for run in payload["runs"]],
+                ["growth_001_0001", "growth_001_0002", "growth_001_0003"],
+            )
+            self.assertEqual(
+                [run["scheduled_offset_seconds"] for run in payload["runs"]],
+                [0.0, 75.0, 150.0],
+            )
+            timing = payload["timing_control"]
+            self.assertEqual(timing["interval_reference"], "Command=111 start-to-start")
+            self.assertAlmostEqual(
+                timing["within_scan"]["nominal_point_interval_seconds"], 0.1
+            )
+            self.assertAlmostEqual(
+                timing["within_scan"]["nominal_scan_traverse_seconds"], 60.0
+            )
+            self.assertFalse((root / "control" / "SPC_CMD.txt").exists())
+
     def test_generic_send_is_plan_only_without_execute(self) -> None:
         output = io.StringIO()
         with contextlib.redirect_stdout(output):

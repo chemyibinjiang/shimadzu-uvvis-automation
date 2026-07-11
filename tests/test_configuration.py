@@ -29,6 +29,7 @@ method_file = "methods/test.vspm"
 start_nm = 300.0
 stop_nm = 900.0
 step_nm = 1.0
+scan_speed_nm_per_min = 600.0
 
 [audit]
 directory = "audit"
@@ -44,6 +45,10 @@ directory = "audit"
             self.assertFalse(settings.discharge_after_measurement)
             self.assertEqual(settings.scan_profiles["default"].start_nm, 300.0)
             self.assertEqual(settings.scan_profiles["default"].stop_nm, 900.0)
+            self.assertEqual(
+                settings.scan_profiles["default"].scan_speed_nm_per_min,
+                600.0,
+            )
 
     def test_invalid_measurement_mode_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

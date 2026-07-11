@@ -17,6 +17,7 @@ class ScanProfile:
     start_nm: float
     stop_nm: float
     step_nm: float
+    scan_speed_nm_per_min: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,12 +124,27 @@ def _scan_profiles(
             raise ValueError(
                 f"scan profile {name!r} range must be evenly divisible by step_nm"
             )
+        raw_scan_speed = raw_profile.get("scan_speed_nm_per_min")
+        scan_speed_nm_per_min: float | None = None
+        if raw_scan_speed is not None:
+            scan_speed_nm_per_min = _float(
+                raw_profile, "scan_speed_nm_per_min", float("nan")
+            )
+            if (
+                not math.isfinite(scan_speed_nm_per_min)
+                or scan_speed_nm_per_min <= 0
+            ):
+                raise ValueError(
+                    f"scan profile {name!r} scan_speed_nm_per_min must be "
+                    "a finite number greater than zero"
+                )
         profiles[name] = ScanProfile(
             name=name,
             method_file=method_file,
             start_nm=start_nm,
             stop_nm=stop_nm,
             step_nm=step_nm,
+            scan_speed_nm_per_min=scan_speed_nm_per_min,
         )
     return MappingProxyType(profiles)
 

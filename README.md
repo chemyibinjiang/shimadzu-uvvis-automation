@@ -18,6 +18,7 @@ Python <- CSV/TXT/XLSX automatic export <- LabSolutions UV-Vis
 - 默认先显示完整命令计划，只有显式确认才执行测量
 - 每条命令的 JSON 审计记录，以及每次测量的 run manifest
 - 自动等待 CSV/TXT/XLSX 输出稳定，并记录大小和 SHA-256
+- 重复完整光谱的单调时钟 start-to-start 调度、唯一 SampleID 和超时停止保护
 - LabSolutions 模拟器和一键端到端验收脚本
 - 真实通道分级测试：文件系统诊断、`Hello`、首个样品测量
 
@@ -109,6 +110,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 完整现场步骤见 [控制电脑验收手册](docs/control-pc-acceptance.md)。
 
 波长范围、旧式 `start/stop/step` 兼容方式和多波长边界见 [波长控制说明](docs/wavelength-control.md)。
+连续扫描内部时间、重复完整光谱和 Time Course 边界见 [时间步长控制说明](docs/time-step-control.md)。
 
 例如，使用已登记方法匹配旧控制器参数，并记录三个目标波长：
 
@@ -120,6 +122,19 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 ```
 
 该命令默认只显示计划；确认后再加入 `--execute`。
+
+例如，每 `90 s` 开始一次完整 Spectrum，共采集 `10` 次：
+
+```powershell
+.\scripts\run-growth-series.ps1 `
+  -SampleName Au_growth `
+  -SeriesId Au_growth_20260711_001 `
+  -Profile default `
+  -Count 10 `
+  -IntervalSeconds 90
+```
+
+先核对计划；现场确认后再加入 `-Execute`。这个时间间隔是相邻 `Command=111` 的开始时间差，不是每个波长点的等待时间。连续扫描内部的扫描速度和响应设置仍由 `.vspm` 方法控制。
 
 首次测量包装脚本也支持配置名称和多目标点：
 
@@ -154,6 +169,7 @@ C:\UVVis-Automation\Logs
 
 - `<日期>\..._cmd<N>_<request-id>.json`：精确命令、反馈、耗时和异常
 - `runs\<SampleID>.json`：整次测量的命令结果、数据路径和导出文件 SHA-256
+- `series\<SeriesID>.json`：重复光谱的计划时间、实际开始偏移、迟到量和各次结果
 - LabSolutions 原始 Spectrum 数据文件：`C:\UVVis-Data\Data\<SampleID>.vspd`
 - LabSolutions 自动导出的 CSV/TXT/XLSX
 

@@ -66,6 +66,7 @@ method_file = "$(ConvertTo-TomlPath $method)"
 start_nm = 300.0
 stop_nm = 900.0
 step_nm = 1.0
+scan_speed_nm_per_min = 600.0
 
 [audit]
 directory = "$(ConvertTo-TomlPath $audit)"
@@ -145,6 +146,18 @@ try {
         '--sample-name', 'simulator_validation', '--sample-id', $sampleId,
         '--start', '300', '--stop', '900', '--step', '1',
         '--wavelengths', '450', '550', '650',
+        '--execute'
+    )
+    $seriesId = "series_$stamp"
+    Invoke-CheckedStep 'series-plan' @(
+        '-m', 'shimadzu_uvvis', '--config', $configPath, 'series',
+        '--sample-name', 'simulator_growth', '--series-id', $seriesId,
+        '--profile', 'default', '--count', '3', '--interval-seconds', '0.5'
+    )
+    Invoke-CheckedStep 'series-measurement' @(
+        '-m', 'shimadzu_uvvis', '--config', $configPath, 'series',
+        '--sample-name', 'simulator_growth', '--series-id', $seriesId,
+        '--profile', 'default', '--count', '3', '--interval-seconds', '0.5',
         '--execute'
     )
     [System.IO.File]::WriteAllText(

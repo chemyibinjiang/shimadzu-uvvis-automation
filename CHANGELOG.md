@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0 - 2026-07-11
+
+- Add dry-run-first repeated full Spectrum acquisition with start-to-start timing.
+- Use a monotonic schedule and stop before a late measurement can overlap its predecessor.
+- Generate unique data/export IDs plus per-run and per-series manifests.
+- Register optional method scan speed and report nominal point/traverse timing.
+- Add a control-PC growth-series wrapper and simulator acceptance coverage.
+- Document old direct-controller settling, Spectrum timing, and Time Course boundaries.
+
 ## 0.3.0 - 2026-07-11
 
 - Add registered Spectrum scan profiles with method, start, stop, and interval metadata.

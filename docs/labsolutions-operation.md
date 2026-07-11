@@ -164,7 +164,15 @@ run_20260711_001
 
 这样上层编排系统可以可靠地关联命令、反馈、原始数据和分析结果。
 
-## 7. 与岛津工程师确认的事项
+## 7. 波长与时间步长
+
+LabSolutions Spectrum 的 `Command=111` 不接收起始波长、终止波长、数据间隔、扫描速度或每点等待时间。这些参数必须先保存在 `.vspm` 方法中；上层程序只能加载经过验证的方法。
+
+生长实验需要重复完整光谱时，使用 `scripts\run-growth-series.ps1` 设置采集次数和相邻 `Command=111` 的 start-to-start 时间间隔。固定一个或多个波长的高时间分辨率曲线则应使用 LabSolutions Time Course `.vtcm` 方法，其中采样间隔和总时长仍由方法定义。
+
+详细配置、公式、命令示例和超时处置见 [LabSolutions UV-Vis 时间步长控制](time-step-control.md)。
+
+## 8. 与岛津工程师确认的事项
 
 - 当前 LabSolutions UV-Vis 版本是否支持自动控制功能，以及许可证是否已启用
 - 当前仪器型号、固件和支持的命令子集
@@ -176,7 +184,7 @@ run_20260711_001
 - 断线、测量中止、附件错误和保存失败后的恢复步骤
 - 是否允许长期无人值守，以及实验室要求的联锁和人工确认点
 
-## 8. 首次现场验收
+## 9. 首次现场验收
 
 1. 运行 `scripts\test-simulator.ps1` 完成软件侧端到端测试。
 2. 运行 `scripts\test-live.ps1`，只检查路径和权限。
@@ -189,4 +197,4 @@ run_20260711_001
 9. 制造一次可控错误，确认上层程序会停止并保留反馈。
 10. 验收完成后再接入自动进样、反应器或生长实验编排。
 
-连续扫描范围和多个目标波长的配置方法见 [LabSolutions 波长范围与多波长控制](wavelength-control.md)。
+连续扫描范围和多个目标波长的配置方法见 [LabSolutions 波长范围与多波长控制](wavelength-control.md)。重复完整光谱、扫描速度和 Time Course 边界见 [LabSolutions UV-Vis 时间步长控制](time-step-control.md)。

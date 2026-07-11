@@ -157,7 +157,10 @@ def run_diagnostics(
                 else "no ambiguous prior command",
             )
         )
-        lock_path = settings.command_dir / f".shimadzu_uvvis_{settings.mode}.lock"
+        lock_path = (
+            settings.command_dir
+            / f".shimadzu_uvvis_{settings.mode}.workflow.lock"
+        )
         try:
             with InterProcessFileLock(
                 lock_path,
@@ -217,6 +220,11 @@ def run_diagnostics(
         )
     else:
         for name, profile in settings.scan_profiles.items():
+            speed = (
+                f", {profile.scan_speed_nm_per_min:g} nm/min"
+                if profile.scan_speed_nm_per_min is not None
+                else ", scan speed not registered"
+            )
             status: CheckStatus = (
                 "pass"
                 if profile.method_file.is_file()
@@ -227,7 +235,8 @@ def run_diagnostics(
                 DiagnosticCheck(
                     f"scan_profile_{name}",
                     status,
-                    f"{profile.start_nm:g}:{profile.stop_nm:g}:{profile.step_nm:g} "
+                    f"{profile.start_nm:g}:{profile.stop_nm:g}:{profile.step_nm:g}"
+                    f"{speed} "
                     f"-> {profile.method_file}",
                 )
             )

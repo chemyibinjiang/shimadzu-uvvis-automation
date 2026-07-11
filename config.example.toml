@@ -32,6 +32,8 @@ method_file = "C:\\UVVis-Data\\Parameter\\growth_scan_300_900.vspm"
 start_nm = 300.0
 stop_nm = 900.0
 step_nm = 1.0
+# Optional: copy the exact value already saved in the .vspm method.
+# scan_speed_nm_per_min = 600.0
 
 [audit]
 directory = "C:\\UVVis-Automation\\Logs"

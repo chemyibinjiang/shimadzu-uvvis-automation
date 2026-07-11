@@ -58,7 +58,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 - `ping.json` 的 `return_code` 为 `0`
 - `plan.json` 显示 `MeasurementMode=2` 和 `Discharge=OFF`
 - `measurement.json` 包含模拟 CSV 的大小和 SHA-256
+- `series-plan.json` 显示三次 start-to-start 调度计划
+- `series-measurement.json` 包含三个独立 SampleID 和导出文件
 - `audit\runs` 中存在对应的 run manifest
+- `audit\series` 中存在对应的 series manifest
 
 失败时先查看同一运行目录下的 `simulator.stderr.log`。
 
@@ -142,6 +145,7 @@ Command=0
 - 自动导出命名规则与 `[export].pattern` 一致
 - 没有其他程序控制命令目录
 - `control-pc.toml` 的 scan profile 起点、终点和间隔与 LabSolutions 方法界面一致
+- 如果登记了 `scan_speed_nm_per_min`，该值与 LabSolutions 方法界面完全一致
 
 ### 7.2 只查看命令计划
 
@@ -190,6 +194,27 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 - 输出包含导出文件大小和 SHA-256
 - `Logs\runs\<SampleID>.json` 存在且顶层 `ok=true`
 - 人工核对 LabSolutions 界面、原始数据和导出数据一致
+
+### 7.4 三次重复光谱验收
+
+单次测量通过后，先用大于一次完整扫描、保存和导出耗时的时间间隔查看计划：
+
+```powershell
+.\scripts\run-growth-series.ps1 `
+  -SampleName validation_growth `
+  -Profile default `
+  -Count 3 `
+  -IntervalSeconds 90
+```
+
+确认三个 SampleID、数据文件、计划偏移和 `Discharge=OFF` 后加入 `-Execute`。通过标准：
+
+- 三次 `Command=111` 均返回 `0`
+- 三个 `.vspd`、导出文件和 run manifest 一一对应
+- series manifest 中三次 `start_lateness_seconds` 均在设置容差内
+- 没有通过增大容差掩盖扫描或导出持续超时
+
+完整含义和 Time Course 边界见 [时间步长控制说明](time-step-control.md)。
 
 ## 8. 常见错误与处置
 

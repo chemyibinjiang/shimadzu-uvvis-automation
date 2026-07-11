@@ -9,7 +9,11 @@ from .client import (
     LabSolutionsProtocolError,
     LabSolutionsRecoveryRequiredError,
     LabSolutionsTimeoutError,
+    SpectrumScheduleOverrunError,
     SpectrumRunResult,
+    SpectrumSeriesPointResult,
+    SpectrumSeriesResult,
+    SpectrumSeriesSample,
 )
 from .configuration import ControlSettings, ScanProfile, load_settings
 
@@ -24,8 +28,12 @@ __all__ = [
     "LabSolutionsRecoveryRequiredError",
     "LabSolutionsTimeoutError",
     "ScanProfile",
+    "SpectrumScheduleOverrunError",
     "SpectrumRunResult",
+    "SpectrumSeriesPointResult",
+    "SpectrumSeriesResult",
+    "SpectrumSeriesSample",
     "load_settings",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

@@ -8,6 +8,7 @@ param(
     [double] $ScanStartNm = 300.0,
     [double] $ScanStopNm = 900.0,
     [double] $ScanStepNm = 1.0,
+    [double] $ScanSpeedNmPerMinute = 0.0,
     [switch] $Force
 )
 
@@ -29,6 +30,11 @@ if ($ScanStartNm -le 0 -or $ScanStopNm -le 0) {
 }
 if ($ScanStepNm -le 0) {
     throw 'ScanStepNm must be greater than zero.'
+}
+if ([double]::IsNaN($ScanSpeedNmPerMinute) -or
+    [double]::IsInfinity($ScanSpeedNmPerMinute) -or
+    $ScanSpeedNmPerMinute -lt 0) {
+    throw 'ScanSpeedNmPerMinute must be zero (not registered) or a finite positive number.'
 }
 $intervalCount = [math]::Abs($ScanStopNm - $ScanStartNm) / $ScanStepNm
 if ([math]::Abs($intervalCount - [math]::Round($intervalCount)) -gt 0.000001) {
@@ -85,6 +91,10 @@ $configPath = Join-Path $repoRoot 'control-pc.toml'
 if ((Test-Path -LiteralPath $configPath) -and -not $Force) {
     Write-Host "Preserving existing configuration: $configPath"
 } else {
+    $scanSpeedLine = ''
+    if ($ScanSpeedNmPerMinute -gt 0) {
+        $scanSpeedLine = "scan_speed_nm_per_min = $(ConvertTo-InvariantNumber $ScanSpeedNmPerMinute)"
+    }
     $config = @"
 [labsolutions]
 command_dir = "$(ConvertTo-TomlPath $CommandDir)"
@@ -115,6 +125,7 @@ method_file = "$(ConvertTo-TomlPath $MethodFile)"
 start_nm = $(ConvertTo-InvariantNumber $ScanStartNm)
 stop_nm = $(ConvertTo-InvariantNumber $ScanStopNm)
 step_nm = $(ConvertTo-InvariantNumber $ScanStepNm)
+$scanSpeedLine
 
 [audit]
 directory = "$(ConvertTo-TomlPath $AuditDir)"
@@ -133,3 +144,8 @@ Write-Host "Before the live test, place the real .vspm method at: $MethodFile"
 Write-Host "Configure LabSolutions Automatic Control to watch: $CommandDir"
 Write-Host "Configure LabSolutions automatic export to write: $ExportDir"
 Write-Host "Verify the saved method range is: $ScanStartNm to $ScanStopNm nm, interval $ScanStepNm nm"
+if ($ScanSpeedNmPerMinute -gt 0) {
+    Write-Host "Verify the saved method scan speed is: $ScanSpeedNmPerMinute nm/min"
+} else {
+    Write-Host 'Scan speed metadata was not registered; add it only after checking the .vspm method.'
+}
