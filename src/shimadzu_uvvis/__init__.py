@@ -11,9 +11,11 @@ from .client import (
     LabSolutionsTimeoutError,
     SpectrumRunResult,
 )
+from .configuration import ControlSettings, ScanProfile, load_settings
 
 __all__ = [
     "Feedback",
+    "ControlSettings",
     "LabSolutionsBusyError",
     "LabSolutionsClient",
     "LabSolutionsCommandError",
@@ -21,7 +23,9 @@ __all__ = [
     "LabSolutionsProtocolError",
     "LabSolutionsRecoveryRequiredError",
     "LabSolutionsTimeoutError",
+    "ScanProfile",
     "SpectrumRunResult",
+    "load_settings",
 ]
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"

@@ -31,6 +31,12 @@ data_dir = "data"
 measurement_mode = 2
 discharge_after_measurement = false
 
+[scan_profiles.default]
+method_file = "methods/test.vspm"
+start_nm = 300.0
+stop_nm = 900.0
+step_nm = 1.0
+
 [audit]
 directory = "audit"
 """.strip(),

@@ -26,5 +26,12 @@ correction = "none"
 discharge_after_measurement = false
 allow_unicode_identifiers = false
 
+# Metadata must exactly match the settings saved inside the .vspm file.
+[scan_profiles.full_300_900_1nm]
+method_file = "C:\\UVVis-Data\\Parameter\\growth_scan_300_900.vspm"
+start_nm = 300.0
+stop_nm = 900.0
+step_nm = 1.0
+
 [audit]
 directory = "C:\\UVVis-Automation\\Logs"

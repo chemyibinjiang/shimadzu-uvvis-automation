@@ -5,6 +5,9 @@ param(
     [string] $DataDir = 'C:\UVVis-Data\Data',
     [string] $MethodFile = 'C:\UVVis-Data\Parameter\growth_scan_300_900.vspm',
     [string] $AuditDir = 'C:\UVVis-Automation\Logs',
+    [double] $ScanStartNm = 300.0,
+    [double] $ScanStopNm = 900.0,
+    [double] $ScanStepNm = 1.0,
     [switch] $Force
 )
 
@@ -12,6 +15,25 @@ $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $venvPython = Join-Path $repoRoot '.venv\Scripts\python.exe'
 $venvDir = Join-Path $repoRoot '.venv'
+
+foreach ($value in @($ScanStartNm, $ScanStopNm, $ScanStepNm)) {
+    if ([double]::IsNaN($value) -or [double]::IsInfinity($value)) {
+        throw 'Scan wavelength values must be finite numbers.'
+    }
+}
+if ($ScanStartNm -eq $ScanStopNm) {
+    throw 'ScanStartNm and ScanStopNm must differ.'
+}
+if ($ScanStartNm -le 0 -or $ScanStopNm -le 0) {
+    throw 'ScanStartNm and ScanStopNm must be positive.'
+}
+if ($ScanStepNm -le 0) {
+    throw 'ScanStepNm must be greater than zero.'
+}
+$intervalCount = [math]::Abs($ScanStopNm - $ScanStartNm) / $ScanStepNm
+if ([math]::Abs($intervalCount - [math]::Round($intervalCount)) -gt 0.000001) {
+    throw 'The scan range must be evenly divisible by ScanStepNm.'
+}
 
 function Test-Python311 {
     param([string] $Executable, [string[]] $PrefixArguments = @())
@@ -54,6 +76,11 @@ function ConvertTo-TomlPath {
     return $Value.Replace('\', '\\').Replace('"', '\"')
 }
 
+function ConvertTo-InvariantNumber {
+    param([double] $Value)
+    return $Value.ToString('G17', [System.Globalization.CultureInfo]::InvariantCulture)
+}
+
 $configPath = Join-Path $repoRoot 'control-pc.toml'
 if ((Test-Path -LiteralPath $configPath) -and -not $Force) {
     Write-Host "Preserving existing configuration: $configPath"
@@ -83,6 +110,12 @@ correction = "none"
 discharge_after_measurement = false
 allow_unicode_identifiers = false
 
+[scan_profiles.default]
+method_file = "$(ConvertTo-TomlPath $MethodFile)"
+start_nm = $(ConvertTo-InvariantNumber $ScanStartNm)
+stop_nm = $(ConvertTo-InvariantNumber $ScanStopNm)
+step_nm = $(ConvertTo-InvariantNumber $ScanStepNm)
+
 [audit]
 directory = "$(ConvertTo-TomlPath $AuditDir)"
 "@
@@ -99,3 +132,4 @@ Write-Host ''
 Write-Host "Before the live test, place the real .vspm method at: $MethodFile"
 Write-Host "Configure LabSolutions Automatic Control to watch: $CommandDir"
 Write-Host "Configure LabSolutions automatic export to write: $ExportDir"
+Write-Host "Verify the saved method range is: $ScanStartNm to $ScanStopNm nm, interval $ScanStepNm nm"

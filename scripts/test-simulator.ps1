@@ -61,6 +61,12 @@ correction = "none"
 discharge_after_measurement = false
 allow_unicode_identifiers = false
 
+[scan_profiles.default]
+method_file = "$(ConvertTo-TomlPath $method)"
+start_nm = 300.0
+stop_nm = 900.0
+step_nm = 1.0
+
 [audit]
 directory = "$(ConvertTo-TomlPath $audit)"
 "@
@@ -130,11 +136,15 @@ try {
     $sampleId = "sim_$stamp"
     Invoke-CheckedStep 'plan' @(
         '-m', 'shimadzu_uvvis', '--config', $configPath, 'spectrum',
-        '--sample-name', 'simulator_validation', '--sample-id', $sampleId
+        '--sample-name', 'simulator_validation', '--sample-id', $sampleId,
+        '--start', '300', '--stop', '900', '--step', '1',
+        '--wavelengths', '450', '550', '650'
     )
     Invoke-CheckedStep 'measurement' @(
         '-m', 'shimadzu_uvvis', '--config', $configPath, 'spectrum',
         '--sample-name', 'simulator_validation', '--sample-id', $sampleId,
+        '--start', '300', '--stop', '900', '--step', '1',
+        '--wavelengths', '450', '550', '650',
         '--execute'
     )
     [System.IO.File]::WriteAllText(

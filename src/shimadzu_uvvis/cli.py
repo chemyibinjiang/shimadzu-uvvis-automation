@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import re
 import sys
 import tomllib
@@ -21,7 +22,7 @@ from .client import (
     LabSolutionsError,
     ParameterValue,
 )
-from .configuration import ControlSettings, load_settings
+from .configuration import ControlSettings, ScanProfile, load_settings
 from .diagnostics import run_diagnostics
 
 
@@ -40,6 +41,8 @@ class ResolvedSpectrumRun:
     export_pattern: str
     export_timeout: float
     stable_seconds: float
+    scan_profile: ScanProfile | None
+    requested_wavelengths: tuple[float, ...]
     commands: tuple[dict[str, Any], ...]
     warnings: tuple[str, ...]
 
@@ -110,6 +113,24 @@ def _build_parser() -> argparse.ArgumentParser:
         "spectrum", help="Plan or execute a complete Spectrum measurement"
     )
     spectrum.add_argument("--method", type=Path)
+    spectrum.add_argument(
+        "--profile", help="Registered LabSolutions Spectrum method profile"
+    )
+    spectrum.add_argument(
+        "--start", type=float, help="Old-control-compatible start wavelength in nm"
+    )
+    spectrum.add_argument(
+        "--stop", type=float, help="Old-control-compatible stop wavelength in nm"
+    )
+    spectrum.add_argument(
+        "--step", type=float, help="Old-control-compatible data interval in nm"
+    )
+    spectrum.add_argument(
+        "--wavelengths",
+        type=float,
+        nargs="+",
+        help="Target points to validate against the selected Spectrum profile",
+    )
     spectrum.add_argument("--sample-name", required=True)
     spectrum.add_argument("--sample-id")
     spectrum.add_argument("--data-file", type=Path)
@@ -268,6 +289,165 @@ def _validate_identifiers(
             ) from exc
 
 
+def _profile_matches_range(
+    profile: ScanProfile, start_nm: float, stop_nm: float, step_nm: float
+) -> bool:
+    return (
+        math.isclose(profile.start_nm, start_nm, abs_tol=1e-6)
+        and math.isclose(profile.stop_nm, stop_nm, abs_tol=1e-6)
+        and math.isclose(profile.step_nm, abs(step_nm), abs_tol=1e-6)
+    )
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return left.resolve() == right.resolve()
+
+
+def _available_profiles(settings: ControlSettings) -> str:
+    if not settings.scan_profiles:
+        return "none configured"
+    return ", ".join(
+        f"{profile.name}={profile.start_nm:g}:{profile.stop_nm:g}:{profile.step_nm:g}"
+        for profile in settings.scan_profiles.values()
+    )
+
+
+def _select_scan_profile(
+    args: argparse.Namespace, settings: ControlSettings
+) -> tuple[Path, ScanProfile | None]:
+    range_values = (args.start, args.stop, args.step)
+    if any(value is not None for value in range_values) and not all(
+        value is not None for value in range_values
+    ):
+        raise ValueError("--start, --stop, and --step must be supplied together")
+    if all(value is not None for value in range_values):
+        if not all(math.isfinite(value) for value in range_values):
+            raise ValueError("scan range values must be finite numbers")
+        if args.step == 0:
+            raise ValueError("--step must not be zero")
+
+    profile: ScanProfile | None = None
+    if args.profile:
+        profile = settings.scan_profiles.get(args.profile)
+        if profile is None:
+            raise ValueError(
+                f"unknown scan profile {args.profile!r}; available: "
+                f"{_available_profiles(settings)}"
+            )
+
+    if all(value is not None for value in range_values):
+        matching = [
+            candidate
+            for candidate in settings.scan_profiles.values()
+            if _profile_matches_range(
+                candidate, args.start, args.stop, args.step
+            )
+        ]
+        if profile is not None and profile not in matching:
+            raise ValueError(
+                f"requested {args.start:g}:{args.stop:g}:{abs(args.step):g} does not "
+                f"match profile {profile.name!r} "
+                f"({profile.start_nm:g}:{profile.stop_nm:g}:{profile.step_nm:g})"
+            )
+        if profile is None:
+            if not matching:
+                raise ValueError(
+                    f"no registered LabSolutions method matches "
+                    f"{args.start:g}:{args.stop:g}:{abs(args.step):g}; available: "
+                    f"{_available_profiles(settings)}"
+                )
+            if len(matching) > 1:
+                names = ", ".join(item.name for item in matching)
+                raise ValueError(
+                    f"multiple scan profiles match this range ({names}); use --profile"
+                )
+            profile = matching[0]
+
+    requested_method = Path(args.method) if args.method is not None else None
+    if profile is not None and requested_method is not None:
+        if not _same_path(requested_method, profile.method_file):
+            raise ValueError(
+                f"--method does not match scan profile {profile.name!r}: "
+                f"{profile.method_file}"
+            )
+
+    method_file = (
+        requested_method
+        or (profile.method_file if profile is not None else None)
+        or settings.method_file
+    )
+    if method_file is None:
+        raise ValueError("no Spectrum method file configured; use --method or [spectrum]")
+
+    if profile is None:
+        matching_method = [
+            candidate
+            for candidate in settings.scan_profiles.values()
+            if _same_path(candidate.method_file, Path(method_file))
+        ]
+        if len(matching_method) == 1:
+            profile = matching_method[0]
+    return Path(method_file), profile
+
+
+def _requested_wavelengths(
+    values: list[float] | None, profile: ScanProfile | None
+) -> tuple[float, ...]:
+    if not values:
+        return ()
+    if profile is None:
+        raise ValueError(
+            "--wavelengths requires a registered scan profile so the points can be verified"
+        )
+    if any(not math.isfinite(value) for value in values):
+        raise ValueError("requested wavelengths must be finite numbers")
+    if any(value <= 0 for value in values):
+        raise ValueError("requested wavelengths must be positive")
+    if len(set(values)) != len(values):
+        raise ValueError("requested wavelengths must not contain duplicates")
+
+    low = min(profile.start_nm, profile.stop_nm)
+    high = max(profile.start_nm, profile.stop_nm)
+    tolerance = max(1e-6, profile.step_nm * 1e-6)
+    for wavelength in values:
+        if wavelength < low - tolerance or wavelength > high + tolerance:
+            raise ValueError(
+                f"wavelength {wavelength:g} nm is outside profile {profile.name!r} "
+                f"range {low:g}-{high:g} nm"
+            )
+        interval = abs(wavelength - profile.start_nm) / profile.step_nm
+        if not math.isclose(interval, round(interval), abs_tol=1e-6):
+            raise ValueError(
+                f"wavelength {wavelength:g} nm is not on profile {profile.name!r} "
+                f"{profile.step_nm:g} nm data grid"
+            )
+    return tuple(values)
+
+
+def _wavelength_control(run: ResolvedSpectrumRun) -> dict[str, Any]:
+    if run.scan_profile is None:
+        return {
+            "source": "method_file_only",
+            "profile_verified": False,
+            "method_file": str(run.method_file),
+            "requested_wavelengths_nm": list(run.requested_wavelengths),
+            "note": "Wavelength settings are inside the LabSolutions method file.",
+        }
+    profile = run.scan_profile
+    return {
+        "source": "registered_labsolutions_method",
+        "profile_verified": True,
+        "profile": profile.name,
+        "method_file": str(profile.method_file),
+        "start_nm": profile.start_nm,
+        "stop_nm": profile.stop_nm,
+        "step_nm": profile.step_nm,
+        "requested_wavelengths_nm": list(run.requested_wavelengths),
+        "acquisition": "continuous_spectrum",
+        "note": "The full registered range is acquired; requested points are metadata targets.",
+    }
+
+
 def _resolve_spectrum_run(
     args: argparse.Namespace, settings: ControlSettings
 ) -> ResolvedSpectrumRun:
@@ -277,9 +457,10 @@ def _resolve_spectrum_run(
     )
     _validate_identifiers(args.sample_name, sample_id, allow_unicode=allow_unicode)
 
-    method_file = args.method or settings.method_file
-    if method_file is None:
-        raise ValueError("no Spectrum method file configured; use --method or [spectrum]")
+    method_file, scan_profile = _select_scan_profile(args, settings)
+    requested_wavelengths = _requested_wavelengths(
+        args.wavelengths, scan_profile
+    )
 
     data_file = args.data_file
     if data_file is None:
@@ -384,6 +565,14 @@ def _resolve_spectrum_run(
         warnings.append("automatic export will not be verified")
     if settings.audit_dir is None:
         warnings.append("command audit logging is not configured")
+    if scan_profile is None:
+        warnings.append(
+            "method wavelength settings are not registered and cannot be verified by the CLI"
+        )
+    if requested_wavelengths:
+        warnings.append(
+            "requested wavelengths are validated targets; Spectrum still acquires the full range"
+        )
 
     return ResolvedSpectrumRun(
         sample_name=args.sample_name,
@@ -399,6 +588,8 @@ def _resolve_spectrum_run(
         export_pattern=export_pattern,
         export_timeout=float(export_timeout),
         stable_seconds=float(stable_seconds),
+        scan_profile=scan_profile,
+        requested_wavelengths=requested_wavelengths,
         commands=tuple(commands),
         warnings=tuple(warnings),
     )
@@ -446,6 +637,7 @@ def _plan_dict(run: ResolvedSpectrumRun) -> dict[str, Any]:
         "data_file": str(run.data_file),
         "export_directory": str(run.export_dir) if run.export_dir else None,
         "export_pattern": run.export_pattern,
+        "wavelength_control": _wavelength_control(run),
         "commands": list(run.commands),
         "warnings": list(run.warnings),
         "next_step": "Review the plan, then repeat with --execute",
@@ -611,6 +803,7 @@ def main(argv: list[str] | None = None) -> int:
             ),
             "method_file": str(run.method_file),
             "data_file": str(run.data_file),
+            "wavelength_control": _wavelength_control(run),
             "commands": [_feedback_dict(item) for item in result.feedback],
             "export": export_metadata,
             "warnings": list(run.warnings),

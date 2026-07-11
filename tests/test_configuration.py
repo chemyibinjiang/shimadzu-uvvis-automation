@@ -24,6 +24,12 @@ directory = "export"
 method_file = "methods/test.vspm"
 data_dir = "data"
 
+[scan_profiles.default]
+method_file = "methods/test.vspm"
+start_nm = 300.0
+stop_nm = 900.0
+step_nm = 1.0
+
 [audit]
 directory = "audit"
 """.strip(),
@@ -36,6 +42,8 @@ directory = "audit"
             self.assertEqual(settings.export_dir, (root / "export").resolve())
             self.assertEqual(settings.measurement_mode, 2)
             self.assertFalse(settings.discharge_after_measurement)
+            self.assertEqual(settings.scan_profiles["default"].start_nm, 300.0)
+            self.assertEqual(settings.scan_profiles["default"].stop_nm, 900.0)
 
     def test_invalid_measurement_mode_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

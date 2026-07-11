@@ -35,7 +35,8 @@ cd shimadzu-uvvis-automation
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\setup-control-pc.ps1 `
-  -MethodFile C:\UVVis-Data\Parameter\growth_scan_300_900.vspm
+  -MethodFile C:\UVVis-Data\Parameter\growth_scan_300_900.vspm `
+  -ScanStartNm 300 -ScanStopNm 900 -ScanStepNm 1
 ```
 
 该脚本会：
@@ -106,6 +107,28 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 仪器尚未连接时加入 `-Connect`。只有空白样品已经正确放置并且确实需要校正时才加入 `-AutoCorrection`。
 
 完整现场步骤见 [控制电脑验收手册](docs/control-pc-acceptance.md)。
+
+波长范围、旧式 `start/stop/step` 兼容方式和多波长边界见 [波长控制说明](docs/wavelength-control.md)。
+
+例如，使用已登记方法匹配旧控制器参数，并记录三个目标波长：
+
+```powershell
+.\scripts\uvvis.ps1 spectrum `
+  --start 300 --stop 900 --step 1 `
+  --wavelengths 450 520 650 `
+  --sample-name validation_sample
+```
+
+该命令默认只显示计划；确认后再加入 `--execute`。
+
+首次测量包装脚本也支持配置名称和多目标点：
+
+```powershell
+.\scripts\run-test-measurement.ps1 `
+  -SampleName validation_sample `
+  -Profile default `
+  -WavelengthsNm "450,520,650"
+```
 
 ## 安全默认值
 

@@ -32,6 +32,12 @@ pattern = "{{sample_id}}*.csv"
 method_file = "{method.as_posix()}"
 data_dir = "{(root / 'data').as_posix()}"
 
+[scan_profiles.default]
+method_file = "{method.as_posix()}"
+start_nm = 300.0
+stop_nm = 900.0
+step_nm = 1.0
+
 [audit]
 directory = "{(root / 'audit').as_posix()}"
 """.strip(),
@@ -49,6 +55,16 @@ directory = "{(root / 'audit').as_posix()}"
                         "validation_sample",
                         "--sample-id",
                         "validation_001",
+                        "--start",
+                        "300",
+                        "--stop",
+                        "900",
+                        "--step",
+                        "1",
+                        "--wavelengths",
+                        "450",
+                        "550",
+                        "650",
                     ]
                 )
 
@@ -60,7 +76,56 @@ directory = "{(root / 'audit').as_posix()}"
             self.assertFalse(payload["executed"])
             self.assertEqual(measurement["parameters"]["MeasurementMode"], 2)
             self.assertEqual(measurement["parameters"]["Discharge"], "OFF")
+            self.assertEqual(payload["wavelength_control"]["profile"], "default")
+            self.assertEqual(
+                payload["wavelength_control"]["requested_wavelengths_nm"],
+                [450.0, 550.0, 650.0],
+            )
             self.assertFalse((root / "control" / "SPC_CMD.txt").exists())
+
+            error_output = io.StringIO()
+            with contextlib.redirect_stderr(error_output):
+                mismatch_exit = main(
+                    [
+                        "--config",
+                        str(config),
+                        "spectrum",
+                        "--sample-name",
+                        "validation_sample",
+                        "--sample-id",
+                        "validation_002",
+                        "--start",
+                        "310",
+                        "--stop",
+                        "900",
+                        "--step",
+                        "1",
+                    ]
+                )
+            mismatch = json.loads(error_output.getvalue())
+            self.assertEqual(mismatch_exit, 1)
+            self.assertIn("no registered LabSolutions method", mismatch["error"])
+
+            off_grid_output = io.StringIO()
+            with contextlib.redirect_stderr(off_grid_output):
+                off_grid_exit = main(
+                    [
+                        "--config",
+                        str(config),
+                        "spectrum",
+                        "--sample-name",
+                        "validation_sample",
+                        "--sample-id",
+                        "validation_003",
+                        "--profile",
+                        "default",
+                        "--wavelengths",
+                        "450.5",
+                    ]
+                )
+            off_grid = json.loads(off_grid_output.getvalue())
+            self.assertEqual(off_grid_exit, 1)
+            self.assertIn("not on profile", off_grid["error"])
 
     def test_generic_send_is_plan_only_without_execute(self) -> None:
         output = io.StringIO()

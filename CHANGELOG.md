@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.0 - 2026-07-11
+
+- Add registered Spectrum scan profiles with method, start, stop, and interval metadata.
+- Add old-controller-compatible `--start`, `--stop`, and `--step` selection.
+- Reject wavelength ranges that do not exactly match a validated LabSolutions method.
+- Validate multiple target wavelengths against the selected range and data grid.
+- Document continuous Spectrum versus discrete multi-wavelength Photometric operation.
+
 ## 0.2.0 - 2026-07-11
 
 - Add offline-friendly Windows control-PC setup and launcher scripts.

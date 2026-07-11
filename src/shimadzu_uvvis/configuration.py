@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+import math
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Mapping
+
+
+@dataclass(frozen=True, slots=True)
+class ScanProfile:
+    name: str
+    method_file: Path
+    start_nm: float
+    stop_nm: float
+    step_nm: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +41,7 @@ class ControlSettings:
     discharge_after_measurement: bool
     allow_unicode_identifiers: bool
     audit_dir: Path | None
+    scan_profiles: Mapping[str, ScanProfile]
 
 
 def _section(config: Mapping[str, Any], name: str) -> Mapping[str, Any]:
@@ -79,6 +91,46 @@ def _path(
     if not path.is_absolute():
         path = (base_dir / path).resolve()
     return path
+
+
+def _scan_profiles(
+    config: Mapping[str, Any], base_dir: Path
+) -> Mapping[str, ScanProfile]:
+    section = _section(config, "scan_profiles")
+    profiles: dict[str, ScanProfile] = {}
+    for name, raw_profile in section.items():
+        if not isinstance(raw_profile, Mapping):
+            raise ValueError(f"scan profile {name!r} must be a TOML table")
+        method_file = _path(raw_profile, "method_file", base_dir)
+        if method_file is None:
+            raise ValueError(f"scan profile {name!r} requires method_file")
+        start_nm = _float(raw_profile, "start_nm", float("nan"))
+        stop_nm = _float(raw_profile, "stop_nm", float("nan"))
+        step_nm = _float(raw_profile, "step_nm", float("nan"))
+        values = (start_nm, stop_nm, step_nm)
+        if any(not math.isfinite(value) for value in values):
+            raise ValueError(
+                f"scan profile {name!r} requires start_nm, stop_nm, and step_nm"
+            )
+        if start_nm == stop_nm:
+            raise ValueError(f"scan profile {name!r} start_nm and stop_nm must differ")
+        if start_nm <= 0 or stop_nm <= 0:
+            raise ValueError(f"scan profile {name!r} wavelengths must be positive")
+        if step_nm <= 0:
+            raise ValueError(f"scan profile {name!r} step_nm must be greater than zero")
+        interval_count = abs(stop_nm - start_nm) / step_nm
+        if abs(interval_count - round(interval_count)) > 1e-6:
+            raise ValueError(
+                f"scan profile {name!r} range must be evenly divisible by step_nm"
+            )
+        profiles[name] = ScanProfile(
+            name=name,
+            method_file=method_file,
+            start_nm=start_nm,
+            stop_nm=stop_nm,
+            step_nm=step_nm,
+        )
+    return MappingProxyType(profiles)
 
 
 def load_settings(path: str | Path | None = None) -> ControlSettings:
@@ -132,6 +184,7 @@ def load_settings(path: str | Path | None = None) -> ControlSettings:
             spectrum, "allow_unicode_identifiers", False
         ),
         audit_dir=_path(audit, "directory", base_dir),
+        scan_profiles=_scan_profiles(config, base_dir),
     )
     positive_values = {
         "timeout_seconds": settings.timeout_seconds,

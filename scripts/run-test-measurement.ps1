@@ -2,6 +2,8 @@
 param(
     [string] $SampleName = 'validation_sample',
     [string] $SampleId = "validation_$(Get-Date -Format 'yyyyMMdd_HHmmss')",
+    [string] $Profile,
+    [string] $WavelengthsNm,
     [switch] $Connect,
     [switch] $AutoCorrection,
     [switch] $Execute
@@ -27,6 +29,26 @@ if ($AutoCorrection) {
     $measurementArguments += @('--correction', 'auto')
 } else {
     $measurementArguments += @('--correction', 'none')
+}
+if (-not [string]::IsNullOrWhiteSpace($Profile)) {
+    $measurementArguments += @('--profile', $Profile)
+}
+if (-not [string]::IsNullOrWhiteSpace($WavelengthsNm)) {
+    $measurementArguments += '--wavelengths'
+    $tokens = [System.Text.RegularExpressions.Regex]::Split(
+        $WavelengthsNm.Trim(),
+        '[,;\s]+'
+    )
+    foreach ($token in $tokens) {
+        $wavelength = [double]::Parse(
+            $token,
+            [System.Globalization.CultureInfo]::InvariantCulture
+        )
+        $measurementArguments += $wavelength.ToString(
+            'G17',
+            [System.Globalization.CultureInfo]::InvariantCulture
+        )
+    }
 }
 
 if (-not $Execute) {

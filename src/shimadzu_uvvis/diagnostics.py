@@ -207,12 +207,38 @@ def run_diagnostics(
             )
         )
 
+    if not settings.scan_profiles:
+        checks.append(
+            DiagnosticCheck(
+                "scan_profiles",
+                "warn",
+                "none configured; start/stop/step compatibility is unavailable",
+            )
+        )
+    else:
+        for name, profile in settings.scan_profiles.items():
+            status: CheckStatus = (
+                "pass"
+                if profile.method_file.is_file()
+                and profile.method_file.suffix.lower() == ".vspm"
+                else "fail"
+            )
+            checks.append(
+                DiagnosticCheck(
+                    f"scan_profile_{name}",
+                    status,
+                    f"{profile.start_nm:g}:{profile.stop_nm:g}:{profile.step_nm:g} "
+                    f"-> {profile.method_file}",
+                )
+            )
+
     path_values = [
         settings.command_dir,
         settings.export_dir,
         settings.data_dir,
         settings.method_file,
         settings.audit_dir,
+        *(profile.method_file for profile in settings.scan_profiles.values()),
     ]
     non_ascii = [str(value) for value in path_values if value and not _ascii_only(value)]
     checks.append(

@@ -44,7 +44,8 @@ C:\UVVis-Automation\Logs
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\setup-control-pc.ps1 `
-  -MethodFile C:\UVVis-Data\Parameter\growth_scan_300_900.vspm
+  -MethodFile C:\UVVis-Data\Parameter\growth_scan_300_900.vspm `
+  -ScanStartNm 300 -ScanStopNm 900 -ScanStepNm 1
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\test-simulator.ps1
@@ -100,6 +101,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 - `pending_command` 为 `pass`
 - `measurement_mode` 显示当前样品池模式
 - `discharge` 显示 OFF
+- 计划使用的 `scan_profile_<名称>` 为 `pass`
 
 `automatic_control` 在此阶段显示 `warn` 是正常的，因为只有下一阶段的 Hello 能确认 LabSolutions 正在监听。
 
@@ -139,6 +141,7 @@ Command=0
 - 方法文件中的波长范围、扫描速度、附件和保存设置已人工检查
 - 自动导出命名规则与 `[export].pattern` 一致
 - 没有其他程序控制命令目录
+- `control-pc.toml` 的 scan profile 起点、终点和间隔与 LabSolutions 方法界面一致
 
 ### 7.2 只查看命令计划
 
@@ -156,6 +159,8 @@ Command=100
 Command=110
 Command=111 MeasurementMode=2 Discharge=OFF
 ```
+
+同时检查 `wavelength_control.profile_verified=true` 以及起点、终点、间隔和目标波长。详细规则见 [波长控制说明](wavelength-control.md)。
 
 ### 7.3 执行测量
 
