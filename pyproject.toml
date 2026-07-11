@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shimadzu-uvvis-automation"
+version = "0.1.0"
+description = "Automation client for Shimadzu LabSolutions UV-Vis text exchange"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+  { name = "Yibin Jiang", email = "44966246+chemyibinjiang@users.noreply.github.com" }
+]
+keywords = ["shimadzu", "uv-vis", "labsolutions", "laboratory-automation"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Scientific/Engineering :: Chemistry"
+]
+dependencies = []
+
+[project.scripts]
+shimadzu-uvvis = "shimadzu_uvvis.cli:main"
+labsolutions-simulator = "shimadzu_uvvis.simulator:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

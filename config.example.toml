@@ -1,0 +1,12 @@
+[labsolutions]
+# Keep paths ASCII-only until Unicode handling has been verified on the instrument PC.
+command_dir = "C:\\UVVisControl"
+mode = "spectrum"
+timeout_seconds = 120.0
+poll_interval_seconds = 0.2
+
+[export]
+# Configure LabSolutions itself to export results to this directory.
+directory = "C:\\UVVis-Data\\Export"
+pattern = "*.csv"
+stable_seconds = 2.0
