@@ -1,12 +1,30 @@
 [labsolutions]
-# Keep paths ASCII-only until Unicode handling has been verified on the instrument PC.
+# Use the same folder configured in LabSolutions Automatic Control.
 command_dir = "C:\\UVVisControl"
 mode = "spectrum"
-timeout_seconds = 120.0
+timeout_seconds = 600.0
 poll_interval_seconds = 0.2
+lock_timeout_seconds = 5.0
+encoding = "utf-8"
 
 [export]
-# Configure LabSolutions itself to export results to this directory.
+# LabSolutions itself must be configured to export here after measurement.
 directory = "C:\\UVVis-Data\\Export"
-pattern = "*.csv"
+pattern = "{sample_id}*.csv"
+timeout_seconds = 120.0
 stable_seconds = 2.0
+
+[spectrum]
+method_file = "C:\\UVVis-Data\\Parameter\\growth_scan_300_900.vspm"
+data_dir = "C:\\UVVis-Data\\Data"
+
+# Safe first-test defaults: current cell only, no automatic discharge.
+measurement_mode = 2
+connect_before_run = false
+disconnect_after_run = false
+correction = "none"
+discharge_after_measurement = false
+allow_unicode_identifiers = false
+
+[audit]
+directory = "C:\\UVVis-Automation\\Logs"

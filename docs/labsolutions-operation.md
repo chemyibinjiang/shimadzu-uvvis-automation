@@ -103,7 +103,7 @@ WL=500.0
 
 ```text
 Command=110
-DataFileName=C:\UVVis-Data\Data\run_20260711_001
+DataFileName=C:\UVVis-Data\Data\run_20260711_001.vspd
 SampleName=Au_growth_01
 SampleID=run_20260711_001
 ```
@@ -112,8 +112,11 @@ SampleID=run_20260711_001
 
 ```text
 Command=111
-MeasurementMode=1
+MeasurementMode=2
+Discharge=OFF
 ```
+
+`MeasurementMode=1` 表示多联池时测量全部已配置样品池，`MeasurementMode=2` 表示只测当前样品池。岛津手册还说明，使用抽吸附件时如果省略 `Discharge`，该参数可能按启用处理。因此本项目首次测试始终显式使用 `MeasurementMode=2` 和 `Discharge=OFF`。
 
 ### 断开仪器
 
@@ -175,12 +178,13 @@ run_20260711_001
 
 ## 8. 首次现场验收
 
-1. 使用本项目模拟器完成软件侧测试。
-2. LabSolutions 进入自动控制模式，仅发送 `Command=0`。
-3. 发送 `Command=1`，确认仪器连接正常。
+1. 运行 `scripts\test-simulator.ps1` 完成软件侧端到端测试。
+2. 运行 `scripts\test-live.ps1`，只检查路径和权限。
+3. LabSolutions 进入自动控制模式后运行 `scripts\test-live.ps1 -Ping`。
 4. 加载已由操作人员手动验证的方法文件。
-5. 使用空白样品测试校正。
-6. 测量一个已知样品，人工对照 LabSolutions 界面结果与导出文件。
-7. 检查 run ID、单位、小数点、编码、列顺序和文件完成判定。
-8. 制造一次可控错误，确认上层程序会停止并保留反馈。
-9. 验收完成后再接入自动进样、反应器或生长实验编排。
+5. 使用 `scripts\run-test-measurement.ps1` 查看首次测量计划。
+6. 放置正确样品后加入 `-Execute`，只测当前样品池且不排出。
+7. 人工对照 LabSolutions 界面、`.vspd` 原始数据、导出文件和 run manifest。
+8. 检查 run ID、单位、小数点、编码、列顺序和文件完成判定。
+9. 制造一次可控错误，确认上层程序会停止并保留反馈。
+10. 验收完成后再接入自动进样、反应器或生长实验编排。

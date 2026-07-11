@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
 import uuid
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
 from typing import Final, Mapping, TypeAlias
+
+from .audit import AuditRecorder, write_json_atomic
+from .locking import FileLockTimeoutError, InterProcessFileLock
 
 ParameterValue: TypeAlias = str | int | float | bool | Path
 
@@ -27,6 +32,17 @@ class LabSolutionsError(RuntimeError):
 
 class LabSolutionsBusyError(LabSolutionsError):
     """Raised when an unconsumed command already exists."""
+
+
+class LabSolutionsRecoveryRequiredError(LabSolutionsBusyError):
+    """Raised after an ambiguous command until an operator acknowledges it."""
+
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        super().__init__(
+            "A previous command did not reach a confirmed feedback state. "
+            f"Inspect LabSolutions and run the recovery command before continuing: {path}"
+        )
 
 
 class LabSolutionsProtocolError(LabSolutionsError):
@@ -156,9 +172,11 @@ class LabSolutionsClient:
         command_dir: str | Path = r"C:\UVVisControl",
         *,
         mode: str = "spectrum",
-        timeout: float = 120.0,
+        timeout: float = 600.0,
         poll_interval: float = 0.2,
+        lock_timeout: float = 5.0,
         encoding: str = "utf-8",
+        audit_dir: str | Path | None = None,
     ) -> None:
         if mode not in MODE_FILE_NAMES:
             choices = ", ".join(sorted(MODE_FILE_NAMES))
@@ -167,16 +185,25 @@ class LabSolutionsClient:
             raise ValueError("timeout must be greater than zero")
         if poll_interval <= 0:
             raise ValueError("poll_interval must be greater than zero")
+        if lock_timeout <= 0:
+            raise ValueError("lock_timeout must be greater than zero")
 
         self.command_dir = Path(command_dir)
         self.mode = mode
         self.timeout = float(timeout)
         self.poll_interval = float(poll_interval)
+        self.lock_timeout = float(lock_timeout)
         self.encoding = encoding
         command_name, feedback_name = MODE_FILE_NAMES[mode]
         self.command_path = self.command_dir / command_name
         self.feedback_path = self.command_dir / feedback_name
+        self.lock_path = self.command_dir / f".shimadzu_uvvis_{mode}.lock"
+        self.recovery_path = (
+            self.command_dir / f".shimadzu_uvvis_{mode}.recovery.json"
+        )
         self._lock = threading.Lock()
+        self.audit_recorder = AuditRecorder(audit_dir) if audit_dir is not None else None
+        self.audit_warnings: list[str] = []
 
     def send_command(
         self,
@@ -199,42 +226,264 @@ class LabSolutionsClient:
             )
 
         payload = _serialize_command(command, parameters)
+        request_id = uuid.uuid4().hex
+        started_at = datetime.now(timezone.utc)
+        started_monotonic = time.monotonic()
+        feedback: Feedback | None = None
+        stale_feedback: str | None = None
+        command_written = False
+        failure: Exception | None = None
 
-        with self._lock:
-            if self.command_path.exists():
-                raise LabSolutionsBusyError(
-                    f"A command is already waiting at {self.command_path}. "
-                    "Do not overwrite it until its state has been checked."
+        try:
+            with self._lock:
+                try:
+                    process_lock = InterProcessFileLock(
+                        self.lock_path,
+                        timeout=self.lock_timeout,
+                        poll_interval=min(self.poll_interval, 0.1),
+                    )
+                    with process_lock:
+                        if self.recovery_path.exists():
+                            raise LabSolutionsRecoveryRequiredError(
+                                self.recovery_path
+                            )
+                        if self.command_path.exists():
+                            raise LabSolutionsBusyError(
+                                f"A command is already waiting at {self.command_path}. "
+                                "Do not overwrite it until its state has been checked."
+                            )
+
+                        if self.feedback_path.exists():
+                            try:
+                                stale_feedback = self.feedback_path.read_text(
+                                    encoding="utf-8-sig", errors="replace"
+                                )
+                            except OSError:
+                                stale_feedback = "<unreadable>"
+                        try:
+                            self.feedback_path.unlink(missing_ok=True)
+                        except OSError as exc:
+                            raise LabSolutionsBusyError(
+                                f"Cannot clear stale feedback file "
+                                f"{self.feedback_path}: {exc}"
+                            ) from exc
+
+                        recovery_record = {
+                            "schema_version": 1,
+                            "request_id": request_id,
+                            "mode": self.mode,
+                            "command": command,
+                            "parameters": {
+                                key: _format_value(value)
+                                for key, value in parameters.items()
+                                if value is not None
+                            },
+                            "created_at_utc": started_at.isoformat(
+                                timespec="milliseconds"
+                            ),
+                            "command_path": str(self.command_path),
+                            "feedback_path": str(self.feedback_path),
+                        }
+                        write_json_atomic(self.recovery_path, recovery_record)
+
+                        temporary_path = self.command_dir / (
+                            f".{self.command_path.name}.{uuid.uuid4().hex}.tmp"
+                        )
+                        try:
+                            temporary_path.write_text(
+                                payload,
+                                encoding=self.encoding,
+                                errors="strict",
+                                newline="",
+                            )
+                            os.replace(temporary_path, self.command_path)
+                            command_written = True
+                        except Exception:
+                            self.recovery_path.unlink(missing_ok=True)
+                            raise
+                        finally:
+                            temporary_path.unlink(missing_ok=True)
+
+                        feedback = self._wait_for_feedback(command, wait_timeout)
+                        try:
+                            self.recovery_path.unlink(missing_ok=True)
+                        except OSError as exc:
+                            self.audit_warnings.append(
+                                "Feedback was confirmed, but the recovery marker "
+                                f"could not be cleared: {exc}"
+                            )
+                except FileLockTimeoutError as exc:
+                    raise LabSolutionsBusyError(
+                        "Another controller process is using the LabSolutions "
+                        f"command folder: {self.command_dir}"
+                    ) from exc
+
+            if feedback is None:
+                raise LabSolutionsProtocolError(
+                    f"Command {command} completed without parsed feedback"
                 )
-
-            try:
-                self.feedback_path.unlink(missing_ok=True)
-            except OSError as exc:
-                raise LabSolutionsBusyError(
-                    f"Cannot clear stale feedback file {self.feedback_path}: {exc}"
-                ) from exc
-
-            temporary_path = self.command_dir / (
-                f".{self.command_path.name}.{uuid.uuid4().hex}.tmp"
-            )
-            try:
-                temporary_path.write_text(
-                    payload, encoding=self.encoding, errors="strict", newline=""
-                )
-                os.replace(temporary_path, self.command_path)
-            finally:
-                temporary_path.unlink(missing_ok=True)
-
-            feedback = self._wait_for_feedback(command, wait_timeout)
             if raise_on_error:
                 feedback.raise_for_error()
             return feedback
+        except Exception as exc:
+            failure = exc
+            raise
+        finally:
+            self._record_transaction(
+                request_id=request_id,
+                command=command,
+                parameters=parameters,
+                payload=payload,
+                started_at=started_at,
+                elapsed_seconds=time.monotonic() - started_monotonic,
+                command_written=command_written,
+                stale_feedback=stale_feedback,
+                feedback=feedback,
+                failure=failure,
+            )
+
+    def _record_transaction(
+        self,
+        *,
+        request_id: str,
+        command: int,
+        parameters: Mapping[str, ParameterValue | None],
+        payload: str,
+        started_at: datetime,
+        elapsed_seconds: float,
+        command_written: bool,
+        stale_feedback: str | None,
+        feedback: Feedback | None,
+        failure: Exception | None,
+    ) -> None:
+        if self.audit_recorder is None:
+            return
+        status = "ok"
+        if feedback is not None and not feedback.ok:
+            status = "labsolutions_error"
+        if failure is not None and feedback is None:
+            status = "transport_error"
+        record: dict[str, object] = {
+            "schema_version": 1,
+            "request_id": request_id,
+            "status": status,
+            "started_at_utc": started_at.isoformat(timespec="milliseconds"),
+            "completed_at_utc": datetime.now(timezone.utc).isoformat(
+                timespec="milliseconds"
+            ),
+            "elapsed_seconds": round(elapsed_seconds, 6),
+            "mode": self.mode,
+            "command": command,
+            "parameters": {
+                key: _format_value(value)
+                for key, value in parameters.items()
+                if value is not None
+            },
+            "command_payload": payload,
+            "command_path": str(self.command_path),
+            "feedback_path": str(self.feedback_path),
+            "command_written": command_written,
+            "command_file_exists_at_record_time": self.command_path.exists(),
+            "stale_feedback_removed": stale_feedback,
+        }
+        if feedback is not None:
+            record["feedback"] = {
+                "command": feedback.command,
+                "return_code": feedback.return_code,
+                "error": feedback.error,
+                "fields": dict(feedback.fields),
+            }
+        if failure is not None:
+            record["exception"] = {
+                "type": type(failure).__name__,
+                "message": str(failure),
+            }
+        try:
+            self.audit_recorder.record(record)
+        except OSError as exc:
+            self.audit_warnings.append(f"Could not write command audit record: {exc}")
+
+    def recovery_snapshot(self) -> dict[str, object]:
+        """Describe an ambiguous prior command without changing any files."""
+
+        marker: object = None
+        if self.recovery_path.exists():
+            try:
+                marker = json.loads(
+                    self.recovery_path.read_text(encoding="utf-8-sig")
+                )
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                marker = {"unreadable": str(exc)}
+
+        feedback: object = None
+        if self.feedback_path.exists():
+            try:
+                parsed_feedback = _parse_feedback(
+                    self.feedback_path.read_text(encoding="utf-8-sig")
+                )
+                feedback = {
+                    "command": parsed_feedback.command,
+                    "return_code": parsed_feedback.return_code,
+                    "error": parsed_feedback.error,
+                    "fields": dict(parsed_feedback.fields),
+                }
+            except (OSError, UnicodeError, LabSolutionsProtocolError) as exc:
+                feedback = {"unreadable": str(exc)}
+        return {
+            "recovery_required": self.recovery_path.exists(),
+            "marker_path": str(self.recovery_path),
+            "marker": marker,
+            "command_file_exists": self.command_path.exists(),
+            "command_path": str(self.command_path),
+            "feedback_file_exists": self.feedback_path.exists(),
+            "feedback_path": str(self.feedback_path),
+            "feedback": feedback,
+        }
+
+    def clear_recovery(self, *, force: bool = False) -> dict[str, object]:
+        """Clear an ambiguous-command marker after operator review."""
+
+        with self._lock:
+            try:
+                process_lock = InterProcessFileLock(
+                    self.lock_path,
+                    timeout=self.lock_timeout,
+                    poll_interval=min(self.poll_interval, 0.1),
+                )
+                with process_lock:
+                    snapshot = self.recovery_snapshot()
+                    if not snapshot["recovery_required"]:
+                        return snapshot
+                    if snapshot["command_file_exists"] and not force:
+                        raise LabSolutionsRecoveryRequiredError(self.recovery_path)
+
+                    marker = snapshot.get("marker")
+                    feedback = snapshot.get("feedback")
+                    marker_command = (
+                        marker.get("command") if isinstance(marker, dict) else None
+                    )
+                    feedback_command = (
+                        feedback.get("command")
+                        if isinstance(feedback, dict)
+                        else None
+                    )
+                    if marker_command != feedback_command and not force:
+                        raise LabSolutionsRecoveryRequiredError(self.recovery_path)
+                    self.recovery_path.unlink(missing_ok=True)
+                    return self.recovery_snapshot()
+            except FileLockTimeoutError as exc:
+                raise LabSolutionsBusyError(
+                    "Another controller process is using the LabSolutions "
+                    f"command folder: {self.command_dir}"
+                ) from exc
 
     def _wait_for_feedback(self, command: int, timeout: float) -> Feedback:
         deadline = time.monotonic() + timeout
         last_protocol_error: LabSolutionsProtocolError | None = None
         read_encoding = (
-            "utf-8-sig" if self.encoding.lower().replace("_", "-") == "utf-8" else self.encoding
+            "utf-8-sig"
+            if self.encoding.lower().replace("_", "-") == "utf-8"
+            else self.encoding
         )
 
         while time.monotonic() < deadline:
@@ -332,12 +581,14 @@ class LabSolutionsClient:
         sample_name: str,
         sample_id: str | None = None,
         data_file: str | Path | None = None,
-        measurement_mode: int = 1,
+        measurement_mode: int = 2,
+        discharge: bool = False,
         correction: Mapping[str, ParameterValue] | None = None,
         connect: bool = False,
         disconnect: bool = False,
         export_dir: str | Path | None = None,
         export_pattern: str = "*.csv",
+        export_timeout: float | None = None,
         stable_seconds: float = 2.0,
     ) -> SpectrumRunResult:
         """Run the standard Hello/load/sample/measure Spectrum sequence."""
@@ -369,7 +620,13 @@ class LabSolutionsClient:
         feedback.append(self.send_command(110, **sample_parameters))
 
         measurement_started_at = time.time()
-        feedback.append(self.send_command(111, MeasurementMode=measurement_mode))
+        feedback.append(
+            self.send_command(
+                111,
+                MeasurementMode=measurement_mode,
+                Discharge=discharge,
+            )
+        )
 
         export_path: Path | None = None
         if export_dir is not None:
@@ -377,6 +634,7 @@ class LabSolutionsClient:
                 export_dir,
                 pattern=export_pattern,
                 since=measurement_started_at,
+                timeout=export_timeout,
                 stable_seconds=stable_seconds,
             )
 
