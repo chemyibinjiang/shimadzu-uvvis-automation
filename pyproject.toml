@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "shimadzu-uvvis-automation"
-version = "0.4.0"
+version = "0.5.0"
 description = "Automation client for Shimadzu LabSolutions UV-Vis text exchange"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,9 +22,15 @@ classifiers = [
 ]
 dependencies = []
 
+[project.optional-dependencies]
+mcp = [
+  "mcp>=1.26,<2",
+]
+
 [project.scripts]
 shimadzu-uvvis = "shimadzu_uvvis.cli:main"
 labsolutions-simulator = "shimadzu_uvvis.simulator:main"
+shimadzu-uvvis-mcp = "shimadzu_uvvis.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

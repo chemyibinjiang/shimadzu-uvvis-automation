@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.0 - 2026-07-14
+
+- Add the read-only `plan_uvvis_scan` stdio MCP tool for AI tutor integration.
+- Return structured profile resolution, point count, timing, readiness, and command planning data.
+- Mark the MCP tool as read-only, idempotent, and non-destructive.
+- Keep the MCP SDK optional through the `mcp` installation extra.
+- Add in-process MCP schema and structured-call coverage.
+
 ## 0.4.0 - 2026-07-11
 
 - Add dry-run-first repeated full Spectrum acquisition with start-to-start timing.

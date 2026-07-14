@@ -313,6 +313,7 @@ stable_seconds = 2.0
 
 ## 文档
 
+- [AI tutor 的 UV-Vis MCP 服务](docs/mcp-server.md)
 - [LabSolutions 自动控制交接说明](docs/labsolutions-operation.md)
 - [设备连接来源记录](docs/vendor-communication-and-manual-notes.md)
 - [控制电脑现场验收手册](docs/control-pc-acceptance.md)
