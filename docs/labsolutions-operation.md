@@ -1,5 +1,11 @@
 # 岛津 LabSolutions UV-Vis 自动控制交接说明
 
+## 0. 来源与结论
+
+本说明基于岛津《LabSolutions UV-Vis 自动控制功能说明书》、2026-07-01 至 2026-07-02 厂商沟通记录，以及本项目当前实现整理。详细来源、PDF 哈希和页码依据见 [岛津 UV-Vis 连接方式来源记录](vendor-communication-and-manual-notes.md)。
+
+微信目录中的外部文件 `shimadzu_labsolutions_uvvis_operation.md` 与本文件不相同：外部文件是英文长版操作说明，本文件是结合本仓库脚本和现场验收流程整理后的中文交接说明。
+
 ## 1. 集成方式
 
 岛津目前提供的是 LabSolutions UV-Vis 上层文本交换，而不是仪器底层 API。自动化程序与 LabSolutions 交换命令和反馈文件，LabSolutions 继续负责连接仪器、执行方法和保存数据。
@@ -37,7 +43,7 @@ LabSolutions 执行一条命令 -> 岛津 UV-Vis
 
 5. 打开 `Instrument -> Automatic Control` 并保持窗口运行。
 
-路径和文件名建议先只使用英文字母、数字、下划线和短横线，避免 Unicode 兼容问题。
+手册说明命令与反馈文件使用 UTF-8，但同时说明 LabSolutions UV-Vis 不支持 Unicode 文本输入。现场首次验收应按保守规则执行：路径、样品名、SampleID、数据文件名和导出文件名只使用英文字母、数字、下划线、点号和短横线，数值只使用半角数字。
 
 ## 3. 文件名映射
 
@@ -49,6 +55,8 @@ LabSolutions 执行一条命令 -> 岛津 UV-Vis
 | Time Course | `TMC_CMD.txt` | `TMC_RES.txt` |
 
 每个命令文件只能包含一条命令。必须等上一条命令的反馈完成后才能发送下一条。
+
+LabSolutions 读取命令文件后会删除命令文件，再执行命令并写反馈文件。本项目因此采用临时文件写入后原子替换为 `SPC_CMD.txt` 的方式，避免 LabSolutions 读到半写入文件。若 `SPC_CMD.txt` 长时间未消失，通常表示 LabSolutions 没有在监听当前命令目录；若命令文件已消失但没有反馈，通常表示 LabSolutions 已读取命令但执行或反馈写回异常。
 
 ## 4. Spectrum 最小流程
 
@@ -155,6 +163,8 @@ Error=""
 ## 6. CSV/TXT/Excel 输出
 
 文本交换协议负责触发测量；结果格式和自动导出位置需要提前在 LabSolutions 中设置。本项目在 `Command=111` 成功后监控导出目录，只有文件大小和修改时间持续稳定一段时间才返回，避免解析仍在写入的文件。
+
+自动控制手册中 Spectrum 测定的主数据文件是 `.vspd`。CSV、TXT 或 Excel 不是通过一条自动控制 `EXPORT CSV` 命令生成，而是由 LabSolutions 的自动输出设置在测定完成后生成。因此现场必须提前确认自动输出菜单位置、格式、字段、命名规则、覆盖策略和完成时点。
 
 推荐让样品 ID、LabSolutions 数据文件名和导出文件名使用同一个 run ID，例如：
 

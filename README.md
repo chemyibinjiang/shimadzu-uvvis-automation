@@ -314,6 +314,7 @@ stable_seconds = 2.0
 ## 文档
 
 - [LabSolutions 自动控制交接说明](docs/labsolutions-operation.md)
+- [设备连接来源记录](docs/vendor-communication-and-manual-notes.md)
 - [控制电脑现场验收手册](docs/control-pc-acceptance.md)
 - [波长范围与多波长控制](docs/wavelength-control.md)
 - [时间步长、重复光谱与 Time Course](docs/time-step-control.md)
