@@ -25,6 +25,7 @@ from .client import (
 )
 from .configuration import ControlSettings, ScanProfile, load_settings
 from .diagnostics import run_diagnostics
+from .profiles import ScanProfileRegistry, SpectrumScanRequest
 
 
 @dataclass(frozen=True, slots=True)
@@ -332,27 +333,8 @@ def _validate_identifiers(
             ) from exc
 
 
-def _profile_matches_range(
-    profile: ScanProfile, start_nm: float, stop_nm: float, step_nm: float
-) -> bool:
-    return (
-        math.isclose(profile.start_nm, start_nm, abs_tol=1e-6)
-        and math.isclose(profile.stop_nm, stop_nm, abs_tol=1e-6)
-        and math.isclose(profile.step_nm, abs(step_nm), abs_tol=1e-6)
-    )
-
-
 def _same_path(left: Path, right: Path) -> bool:
     return left.resolve() == right.resolve()
-
-
-def _available_profiles(settings: ControlSettings) -> str:
-    if not settings.scan_profiles:
-        return "none configured"
-    return ", ".join(
-        f"{profile.name}={profile.start_nm:g}:{profile.stop_nm:g}:{profile.step_nm:g}"
-        for profile in settings.scan_profiles.values()
-    )
 
 
 def _select_scan_profile(
@@ -369,42 +351,20 @@ def _select_scan_profile(
         if args.step == 0:
             raise ValueError("--step must not be zero")
 
+    registry = ScanProfileRegistry(settings.scan_profiles)
     profile: ScanProfile | None = None
-    if args.profile:
-        profile = settings.scan_profiles.get(args.profile)
-        if profile is None:
-            raise ValueError(
-                f"unknown scan profile {args.profile!r}; available: "
-                f"{_available_profiles(settings)}"
-            )
-
     if all(value is not None for value in range_values):
-        matching = [
-            candidate
-            for candidate in settings.scan_profiles.values()
-            if _profile_matches_range(
-                candidate, args.start, args.stop, args.step
-            )
-        ]
-        if profile is not None and profile not in matching:
-            raise ValueError(
-                f"requested {args.start:g}:{args.stop:g}:{abs(args.step):g} does not "
-                f"match profile {profile.name!r} "
-                f"({profile.start_nm:g}:{profile.stop_nm:g}:{profile.step_nm:g})"
-            )
-        if profile is None:
-            if not matching:
-                raise ValueError(
-                    f"no registered LabSolutions method matches "
-                    f"{args.start:g}:{args.stop:g}:{abs(args.step):g}; available: "
-                    f"{_available_profiles(settings)}"
-                )
-            if len(matching) > 1:
-                names = ", ".join(item.name for item in matching)
-                raise ValueError(
-                    f"multiple scan profiles match this range ({names}); use --profile"
-                )
-            profile = matching[0]
+        direction = "ascending" if args.stop > args.start else "descending"
+        request = SpectrumScanRequest.from_boundaries(
+            args.start,
+            args.stop,
+            abs(args.step),
+            direction=direction,
+            profile_name=args.profile,
+        )
+        profile = registry.resolve(request).profile
+    elif args.profile:
+        profile = registry.get(args.profile)
 
     requested_method = Path(args.method) if args.method is not None else None
     if profile is not None and requested_method is not None:

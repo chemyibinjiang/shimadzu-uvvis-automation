@@ -72,7 +72,7 @@ step_nm = 1.0
 
 如果实验需要固定一个或多个波长的高时间分辨率曲线，应在 LabSolutions Time Course 中建立 `.vtcm` 方法。自动控制手册的 `Command=400/410/411` 负责加载方法、设置样品和开始测量；采样波长、时间间隔和总时长仍由 `.vtcm` 定义。
 
-更完整的说明见 [时间步长控制](docs/time-step-control.md) 和 [波长控制](docs/wavelength-control.md)。
+更完整的说明见 [扫描请求与 profile 解析](docs/profile-resolution.md)、[时间步长控制](docs/time-step-control.md) 和 [波长控制](docs/wavelength-control.md)。
 
 ## 控制电脑要求
 
@@ -316,6 +316,7 @@ stable_seconds = 2.0
 - [LabSolutions 自动控制交接说明](docs/labsolutions-operation.md)
 - [设备连接来源记录](docs/vendor-communication-and-manual-notes.md)
 - [控制电脑现场验收手册](docs/control-pc-acceptance.md)
+- [扫描请求与 LabSolutions profile 解析](docs/profile-resolution.md)
 - [波长范围与多波长控制](docs/wavelength-control.md)
 - [时间步长、重复光谱与 Time Course](docs/time-step-control.md)
 - [版本记录](CHANGELOG.md)

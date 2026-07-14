@@ -16,9 +16,20 @@ from .client import (
     SpectrumSeriesSample,
 )
 from .configuration import ControlSettings, ScanProfile, load_settings
+from .profiles import (
+    AmbiguousScanProfileError,
+    ResolvedScanProfile,
+    ScanProfileNotFoundError,
+    ScanProfileRegistry,
+    ScanProfileResolutionError,
+    SpectrumScanRequest,
+    UnknownScanProfileError,
+    resolve_scan_profile,
+)
 
 __all__ = [
     "Feedback",
+    "AmbiguousScanProfileError",
     "ControlSettings",
     "LabSolutionsBusyError",
     "LabSolutionsClient",
@@ -28,12 +39,19 @@ __all__ = [
     "LabSolutionsRecoveryRequiredError",
     "LabSolutionsTimeoutError",
     "ScanProfile",
+    "ResolvedScanProfile",
+    "ScanProfileNotFoundError",
+    "ScanProfileRegistry",
+    "ScanProfileResolutionError",
+    "SpectrumScanRequest",
     "SpectrumScheduleOverrunError",
     "SpectrumRunResult",
     "SpectrumSeriesPointResult",
     "SpectrumSeriesResult",
     "SpectrumSeriesSample",
+    "UnknownScanProfileError",
     "load_settings",
+    "resolve_scan_profile",
 ]
 
 __version__ = "0.4.0"
