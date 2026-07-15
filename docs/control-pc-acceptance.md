@@ -28,11 +28,11 @@
 推荐目录：
 
 ```text
-C:\UVVisControl
-C:\UVVis-Data\Parameter
-C:\UVVis-Data\Data
-C:\UVVis-Data\Export
-C:\UVVis-Automation\Logs
+D:\UVVis-Automation\control
+D:\UVVis-Automation\methods
+D:\UVVis-Automation\data
+D:\UVVis-Automation\export
+D:\UVVis-Automation\logs
 ```
 
 路径建议先只使用 ASCII 字符。
@@ -44,7 +44,7 @@ C:\UVVis-Automation\Logs
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\setup-control-pc.ps1 `
-  -MethodFile C:\UVVis-Data\Parameter\growth_scan_300_900.vspm `
+  -MethodFile D:\UVVis-Automation\methods\growth_scan_300_900.vspm `
   -ScanStartNm 300 -ScanStopNm 900 -ScanStepNm 1
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
@@ -189,7 +189,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 通过标准：
 
 - 每条命令 `return_code=0`
-- `C:\UVVis-Data\Data` 中产生新的 `.vspd`
+- `D:\UVVis-Automation\data` 中产生新的 `.vspd`
 - 自动导出目录产生与本次 SampleID 对应的新文件
 - 输出包含导出文件大小和 SHA-256
 - `Logs\runs\<SampleID>.json` 存在且顶层 `ok=true`

@@ -15,7 +15,21 @@ from .client import (
     SpectrumSeriesResult,
     SpectrumSeriesSample,
 )
-from .configuration import ControlSettings, ScanProfile, load_settings
+from .configuration import (
+    ControlSettings,
+    MeasurementMode,
+    MethodTemplate,
+    ScanProfile,
+    load_settings,
+)
+from .measurements import (
+    MeasurementPlanError,
+    MeasurementRequest,
+    MethodTemplateRegistry,
+    ResolvedMethodTemplate,
+    build_measurement_request,
+    resolve_method_template,
+)
 from .profiles import (
     AmbiguousScanProfileError,
     ResolvedScanProfile,
@@ -38,8 +52,14 @@ __all__ = [
     "LabSolutionsProtocolError",
     "LabSolutionsRecoveryRequiredError",
     "LabSolutionsTimeoutError",
+    "MeasurementMode",
+    "MeasurementPlanError",
+    "MeasurementRequest",
+    "MethodTemplate",
+    "MethodTemplateRegistry",
     "ScanProfile",
     "ResolvedScanProfile",
+    "ResolvedMethodTemplate",
     "ScanProfileNotFoundError",
     "ScanProfileRegistry",
     "ScanProfileResolutionError",
@@ -50,8 +70,10 @@ __all__ = [
     "SpectrumSeriesResult",
     "SpectrumSeriesSample",
     "UnknownScanProfileError",
+    "build_measurement_request",
     "load_settings",
     "resolve_scan_profile",
+    "resolve_method_template",
 ]
 
 __version__ = "0.5.0"

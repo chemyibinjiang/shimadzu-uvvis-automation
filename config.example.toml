@@ -1,6 +1,6 @@
 [labsolutions]
 # Use the same folder configured in LabSolutions Automatic Control.
-command_dir = "C:\\UVVisControl"
+command_dir = "D:\\UVVis-Automation\\control"
 mode = "spectrum"
 timeout_seconds = 600.0
 poll_interval_seconds = 0.2
@@ -9,14 +9,14 @@ encoding = "utf-8"
 
 [export]
 # LabSolutions itself must be configured to export here after measurement.
-directory = "C:\\UVVis-Data\\Export"
+directory = "D:\\UVVis-Automation\\export"
 pattern = "{sample_id}*.csv"
 timeout_seconds = 120.0
 stable_seconds = 2.0
 
 [spectrum]
-method_file = "C:\\UVVis-Data\\Parameter\\growth_scan_300_900.vspm"
-data_dir = "C:\\UVVis-Data\\Data"
+method_file = "D:\\UVVis-Automation\\methods\\growth_scan_300_900.vspm"
+data_dir = "D:\\UVVis-Automation\\data"
 
 # Safe first-test defaults: current cell only, no automatic discharge.
 measurement_mode = 2
@@ -26,9 +26,33 @@ correction = "none"
 discharge_after_measurement = false
 allow_unicode_identifiers = false
 
+[method_generation]
+# Generated methods are separate files; registered templates are never overwritten.
+output_directory = "D:\\UVVis-Automation\\methods\\generated"
+
+[method_templates.spectrum_absorbance]
+mode = "spectrum"
+signal_type = "absorbance"
+method_file = "D:\\UVVis-Automation\\templates\\spectrum_absorbance.vspm"
+
+[method_templates.photometric_absorbance]
+mode = "photometric"
+signal_type = "absorbance"
+method_file = "D:\\UVVis-Automation\\templates\\photometric_absorbance.vphm"
+
+[method_templates.quantitation_absorbance]
+mode = "quantitation"
+signal_type = "absorbance"
+method_file = "D:\\UVVis-Automation\\templates\\quantitation_absorbance.vqum"
+
+[method_templates.time_course_absorbance]
+mode = "time_course"
+signal_type = "absorbance"
+method_file = "D:\\UVVis-Automation\\templates\\time_course_absorbance.vtmm"
+
 # Metadata must exactly match the settings saved inside the .vspm file.
 [scan_profiles.full_300_900_1nm]
-method_file = "C:\\UVVis-Data\\Parameter\\growth_scan_300_900.vspm"
+method_file = "D:\\UVVis-Automation\\methods\\growth_scan_300_900.vspm"
 start_nm = 300.0
 stop_nm = 900.0
 step_nm = 1.0
@@ -36,4 +60,4 @@ step_nm = 1.0
 # scan_speed_nm_per_min = 600.0
 
 [audit]
-directory = "C:\\UVVis-Automation\\Logs"
+directory = "D:\\UVVis-Automation\\logs"

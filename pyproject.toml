@@ -24,7 +24,7 @@ dependencies = []
 
 [project.optional-dependencies]
 mcp = [
-  "mcp>=1.26,<2",
+  "mcp>=1.25,<2",
 ]
 
 [project.scripts]

@@ -1,20 +1,29 @@
 # UV-Vis MCP 服务
 
-`shimadzu-uvvis-mcp` 是供 AI tutor 调用的 stdio MCP 服务。当前只提供
-`plan_uvvis_scan`。该工具只读取配置和检查文件路径，不会写入 `SPC_CMD.txt`、
-连接仪器或开始测量。
+`shimadzu-uvvis-mcp` 是供 AI tutor 调用的 stdio MCP 服务。当前提供两个只读工具：
+
+- `plan_uvvis_measurement`：统一规划 Spectrum、Photometric、Quantitation 和 Time Course。
+- `plan_uvvis_scan`：兼容旧调用，精确匹配已登记的 Spectrum profile。
+
+两个工具都不会写入 `*_CMD.txt`、编辑方法文件、连接仪器或开始测量。
 
 ## 安装与启动
 
+控制电脑已经安装 MCP SDK 时，可离线安装本仓库：
+
 ```powershell
-python -m pip install -e ".[mcp]"
-shimadzu-uvvis-mcp --config C:\UVVis-Automation\control-pc.toml
+python -c "import mcp; print(mcp.__file__)"
+python -m pip install -e . --no-build-isolation --no-deps
+shimadzu-uvvis-mcp --config D:\UVVis-Automation\control-pc.toml
 ```
 
-也可以通过环境变量固定配置文件：
+`--no-build-isolation` 避免 pip 创建隔离环境并联网下载 `setuptools`；`--no-deps` 避免访问
+软件源解析依赖。MCP SDK 本身仍必须已经安装。
+
+也可以固定配置文件：
 
 ```powershell
-$env:SHIMADZU_UVVIS_CONFIG = "C:\UVVis-Automation\control-pc.toml"
+$env:SHIMADZU_UVVIS_CONFIG = "D:\UVVis-Automation\control-pc.toml"
 shimadzu-uvvis-mcp
 ```
 
@@ -25,37 +34,74 @@ MCP 客户端配置示例：
   "mcpServers": {
     "shimadzu-uvvis": {
       "command": "shimadzu-uvvis-mcp",
-      "args": [
-        "--config",
-        "C:\\UVVis-Automation\\control-pc.toml"
-      ]
+      "args": ["--config", "D:\\UVVis-Automation\\control-pc.toml"]
     }
   }
 }
 ```
 
-## plan_uvvis_scan
+## plan_uvvis_measurement
 
-结构化输入：
+统一输入字段：
+
+| 字段 | 适用模式 | 含义 |
+| --- | --- | --- |
+| `mode` | 全部 | `spectrum/photometric/quantitation/time_course` |
+| `signal_type` | 全部 | 默认 `absorbance`，必须匹配登记模板 |
+| `template_name` | 全部 | 有多个同类模板时显式指定 |
+| `start_nm/stop_nm/step_nm` | Spectrum | 连续扫描范围和数据间隔 |
+| `direction` | Spectrum | 可选 `ascending/descending` |
+| `wavelengths_nm` | Photometric | 离散波长数组 |
+| `wavelength_nm` | Quantitation、Time Course | 测定波长 |
+| `interval_seconds/duration_seconds` | Time Course | 采样间隔和总时长 |
+
+示例：
 
 ```json
 {
-  "start_nm": 400.0,
-  "stop_nm": 700.0,
-  "step_nm": 1.0,
+  "mode": "time_course",
+  "wavelength_nm": 520,
+  "interval_seconds": 1,
+  "duration_seconds": 600
+}
+```
+
+结果包括规范化请求、模板、目标方法文件、数据扩展名、路径就绪检查和模式对应的命令计划。
+目标方法不存在时返回：
+
+```json
+{
+  "status": "method_generation_required",
+  "plan_only": true,
+  "method_generation": {
+    "required": true,
+    "automatic_generation_supported": false
+  }
+}
+```
+
+这不是错误地把模板直接执行，而是明确告诉 AI tutor：必须先在 LabSolutions 中生成并验证该参数
+组合的方法。完整说明见 [四种测量模式与方法模板](four-mode-methods.md)。
+
+## plan_uvvis_scan
+
+兼容工具输入：
+
+```json
+{
+  "start_nm": 400,
+  "stop_nm": 700,
+  "step_nm": 1,
   "direction": null,
   "profile_name": null
 }
 ```
 
-工具会调用公共 profile 解析器，返回：
+它只匹配 `[scan_profiles.<name>]` 中参数完全一致的已验证 `.vspm`。没有匹配或存在歧义时
+拒绝规划，不会自动截取更大范围的方法，也不会生成新方法。
 
-- 规范化后的范围、步长和点数；
-- 唯一匹配的 profile、`.vspm` 路径和扫描方向；
-- 名义扫描时间（profile 登记了扫描速度时）；
-- 方法文件、命令目录、数据目录和导出目录的就绪检查；
-- `Command=0/100/110/111` 的只读命令计划模板；
-- 明确的安全标记，表明本次调用没有执行物理操作。
+## 安全边界
 
-没有匹配方法或存在多个匹配方法时，工具调用返回 MCP 错误。需要先在 LabSolutions
-中创建并验证方法，然后登记到 `[scan_profiles.<name>]`；工具不会自动生成 `.vspm`。
+MCP 是 AI tutor 与本地控制程序之间的结构化接口，不是 USB 驱动。未来的执行工具也只能通过
+LabSolutions 自动控制目录发送受审计命令，并且必须在方法存在、路径就绪、样品信息完整和操作员
+授权后才能测量。

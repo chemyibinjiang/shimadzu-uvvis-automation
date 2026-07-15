@@ -71,7 +71,7 @@ SHA-256：`CF713062807A56E4DDA7F3E8209828C375182774E27F826C614BF798ADDC04B4`
 | 1.1 | 自动控制通过上层系统与 LabSolutions 交换命令文件和反馈文件实现。 | 本项目只作为 LabSolutions 文本交换客户端，不直接控制 USB、串口或底层驱动。 |
 | 1.2 | 上层系统保存命令文件到命令接收文件夹；LabSolutions 读取后删除命令文件、执行命令、写反馈文件。 | 客户端先写临时文件，再原子替换为正式命令文件，并等待匹配反馈。 |
 | 1.3 | 一个命令文件只能记载一条命令；执行命令时无法接收下一条命令；反馈文件发出后才接收下一条。 | 客户端对高层流程加进程间锁，避免并发写入同一命令目录。 |
-| 1.3 | Spectrum 使用 `SPC_CMD.txt` 和 `SPC_RES.txt`；Quantitation 使用 `QUA_CMD.txt` 和 `QUA_RES.txt`；Photometric 使用 `PHO_CMD.txt` 和 `PHO_RES.txt`；Time Course 使用 `TMC_CMD.txt` 和 `TMC_RES.txt`。 | 当前默认实现 Spectrum，其他模式只作为边界和后续扩展记录。 |
+| 1.3 | Spectrum 使用 `SPC_CMD.txt` 和 `SPC_RES.txt`；Quantitation 使用 `QUA_CMD.txt` 和 `QUA_RES.txt`；Photometric 使用 `PHO_CMD.txt` 和 `PHO_RES.txt`；Time Course 使用 `TMC_CMD.txt` 和 `TMC_RES.txt`。 | 四模式 MCP 请求和命令计划已实现；真实执行目前只开放 Spectrum。 |
 | 1.4-1.6 | 命令文件第一行是 `Command=<编号>`，后续行为参数；反馈文件包含 `Command`、`Return`、`Error`；命令和反馈文件使用 UTF-8。 | 文件编码固定为 UTF-8，但现场文本内容仍按 ASCII 保守执行。 |
 | 5.8 | `Command=21` 可按方法自动校正、范围基线校正或单波长调零。 | 首次真实测量默认不自动校正，只有操作人员确认后才启用。 |
 | 5.11.1 | `Command=100` 加载 Spectrum 参数文件；参数文件必须与登记机型匹配。 | 配置文件登记 `.vspm`，现场验收要求人工核对波长范围和扫描参数。 |
@@ -80,12 +80,12 @@ SHA-256：`CF713062807A56E4DDA7F3E8209828C375182774E27F826C614BF798ADDC04B4`
 | 5.11.3 | `MeasurementMode=1` 测定所有已配置样品池，`MeasurementMode=2` 只测当前样品池；无效或缺省时可能按 `1` 处理。 | 命令中显式写入 `MeasurementMode=2`。 |
 | 5.11.3 | `Discharge=ON/OFF` 用于抽吸或注射式抽吸单元；无效或缺省时可能按启用处理。 | 命令中显式写入 `Discharge=OFF`。 |
 | 5.11.3 | 常见测量错误包括未加载参数文件、多联池未初始化、测定错误、人工中止、数据文件名无效、同名数据文件已加载、光谱数据保存失败。 | 文档和代码均要求负 `Return` 时停止流程，保留反馈和审计，不无限重试测量命令。 |
-| 5.14 | Time Course 使用 `.vtcm/.vtcd` 和 `Command=400/410/411`；测定波长、间隔和总时长仍由方法文件定义。 | 当前重复完整光谱用 Spectrum 调度；固定波长高时间分辨率实验列为 Time Course 扩展边界。 |
+| 5.14 | 手册示例使用 `.vtcm` 和 `Command=400/410/411`；测定波长、间隔和总时长仍由方法文件定义。 | 本机 1.13 程序组件登记 `.vtmm/.vtmd`；配置暂时接受 `.vtmm` 和 `.vtcm`，现场以“另存为”结果为准。 |
 
 ## 3. 当前软件边界
 
 - 连接仪器由 LabSolutions 完成，本项目只发送 `Command=1` 等文本命令。
-- 测量参数由 `.vspm`、`.vphm` 或 `.vtcm` 方法文件保存，本项目不解析这些专有文件。
+- 测量参数由 `.vspm`、`.vphm`、`.vqum` 或 `.vtmm/.vtcm` 方法文件保存，本项目不解析这些专有文件。
 - `Command=111` 不提供起始波长、终止波长、步长、扫描速度或每点等待时间参数。
 - CSV、TXT、Excel 输出由 LabSolutions 自动输出设置决定。本项目只等待导出目录中新文件稳定后记录大小和 SHA-256。
 - 命令目录、数据目录、导出目录和日志目录首次建议使用 ASCII 路径。

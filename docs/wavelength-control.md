@@ -41,14 +41,14 @@ LabSolutions UV-Vis 自动控制手册中的 Spectrum 命令 `100/110/111` 没�
 6. 保存为 ASCII 路径下的 `.vspm` 文件，例如：
 
    ```text
-   C:\UVVis-Data\Parameter\scan_300_900_1nm.vspm
+   D:\UVVis-Automation\methods\scan_300_900_1nm.vspm
    ```
 
 7. 在 `control-pc.toml` 中登记完全相同的元数据：
 
    ```toml
    [scan_profiles.full_300_900_1nm]
-   method_file = "C:\\UVVis-Data\\Parameter\\scan_300_900_1nm.vspm"
+   method_file = "D:\\UVVis-Automation\\methods\\scan_300_900_1nm.vspm"
    start_nm = 300.0
    stop_nm = 900.0
    step_nm = 1.0
@@ -159,19 +159,19 @@ Command=320  保存数据文件
 
 ```toml
 [scan_profiles.uv_200_400_05nm]
-method_file = "C:\\UVVis-Data\\Parameter\\uv_200_400_05nm.vspm"
+method_file = "D:\\UVVis-Automation\\methods\\uv_200_400_05nm.vspm"
 start_nm = 200.0
 stop_nm = 400.0
 step_nm = 0.5
 
 [scan_profiles.visible_400_800_1nm]
-method_file = "C:\\UVVis-Data\\Parameter\\visible_400_800_1nm.vspm"
+method_file = "D:\\UVVis-Automation\\methods\\visible_400_800_1nm.vspm"
 start_nm = 400.0
 stop_nm = 800.0
 step_nm = 1.0
 
 [scan_profiles.growth_900_300_1nm]
-method_file = "C:\\UVVis-Data\\Parameter\\growth_900_300_1nm.vspm"
+method_file = "D:\\UVVis-Automation\\methods\\growth_900_300_1nm.vspm"
 start_nm = 900.0
 stop_nm = 300.0
 step_nm = 1.0

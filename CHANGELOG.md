@@ -1,11 +1,24 @@
 # Changelog
 
+## Unreleased
+
+- Add the read-only `plan_uvvis_measurement` MCP tool for Spectrum, Photometric,
+  Quantitation, and Time Course requests.
+- Add strict mode-specific parameter validation, method-template selection, generated
+  method naming, readiness checks, and official command-sequence plans.
+- Register all four LabSolutions method/data extensions, including the local `.vtmm`
+  and manual `.vtcm` Time Course method variants.
+- Keep source templates immutable and block execution readiness until a generated
+  method file exists.
+
 ## 0.5.0 - 2026-07-14
 
 - Add the read-only `plan_uvvis_scan` stdio MCP tool for AI tutor integration.
 - Return structured profile resolution, point count, timing, readiness, and command planning data.
 - Mark the MCP tool as read-only, idempotent, and non-destructive.
 - Keep the MCP SDK optional through the `mcp` installation extra.
+- Support the locally available MCP 1.25 SDK and document offline editable installation.
+- Use `D:\UVVis-Automation` for control-PC commands, methods, data, exports, and logs.
 - Add in-process MCP schema and structured-call coverage.
 
 ## 0.4.0 - 2026-07-11

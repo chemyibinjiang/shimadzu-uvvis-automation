@@ -6,7 +6,7 @@
 | --- | --- | --- |
 | 连续光谱中相邻波长点的时间间隔 | LabSolutions `.vspm` 中的数据间隔、扫描速度和响应设置 | 读取人工登记的元数据并计算标称值，不修改 `.vspm` |
 | 生长过程中每隔一段时间重新采集完整光谱 | 上层调度器 | `series --interval-seconds`，按 `Command=111` 开始时刻进行 start-to-start 调度 |
-| 固定一个或多个波长的连续时间曲线 | LabSolutions Time Course `.vtcm` | 时间间隔和总时长在 `.vtcm` 内设置；当前版本仅记录操作边界，尚未开放现场执行 |
+| 固定一个或多个波长的连续时间曲线 | LabSolutions Time Course `.vtmm`（手册示例为 `.vtcm`） | MCP 已规划波长、间隔和总时长；方法生成及现场执行尚未开放 |
 
 旧 `xiaozhi_uv_edu` 控制器的 `settle_time` 是在每次直接移动单色器后执行 `sleep`，然后读取能量值。LabSolutions Spectrum 的文本命令 `Command=111` 只有 `MeasurementMode` 和 `Discharge`，没有等价的每波长 `settle_time` 参数。
 
@@ -25,7 +25,7 @@
 
 ```toml
 [scan_profiles.default]
-method_file = "C:\\UVVis-Data\\Parameter\\growth_scan_300_900.vspm"
+method_file = "D:\\UVVis-Automation\\methods\\growth_scan_300_900.vspm"
 start_nm = 300.0
 stop_nm = 900.0
 step_nm = 1.0
@@ -125,22 +125,22 @@ Au_growth_20260711_001_0010
 如果目标是固定 `450 nm`，或固定多个波长观察随时间变化，LabSolutions Time Course 通常比反复扫描整个 `300-900 nm` 更合适。自动控制手册第 5.14 和 6.4 节给出的流程是：
 
 ```text
-Command=400  加载 .vtcm 参数文件
+Command=400  加载 .vtmm 参数文件（手册版本可能为 .vtcm）
 Command=410  设置样品和数据文件信息
 Command=411  执行时间程序测定
 ```
 
-`Command=411` 同样只公开 `MeasurementMode` 和 `Discharge`。采样波长、时间间隔和总时长需要预先保存在 `.vtcm` 方法中，不能通过这条文本命令临时传入。
+`Command=411` 同样只公开 `MeasurementMode` 和 `Discharge`。采样波长、时间间隔和总时长需要预先保存在 Time Course 方法中，不能通过这条文本命令临时传入。
 
-当前仓库尚未开放 Time Course 执行，因为仍需在真实控制电脑上验收 `.vtcm`、`.vtcd`、多波长结果结构和自动 CSV/Excel 导出完成时点。在完成这些现场检查前，使用 `series` 采集重复完整光谱，或由操作人员直接运行已验证的 Time Course 方法。
+当前仓库的 `plan_uvvis_measurement` 已能校验 Time Course 请求、选择模板并给出 `400/410/411` 命令计划，但尚未开放执行，因为仍需验收本机 `.vtmm/.vtmd`、多波长结果结构和自动 CSV/Excel 导出完成时点。在完成这些现场检查前，使用 `series` 采集重复完整光谱，或由操作人员直接运行已验证的 Time Course 方法。
 
 ## 7. 输出与审计
 
 成功序列会写入：
 
 ```text
-C:\UVVis-Automation\Logs\runs\<SampleID>.json
-C:\UVVis-Automation\Logs\series\<SeriesID>.json
+D:\UVVis-Automation\logs\runs\<SampleID>.json
+D:\UVVis-Automation\logs\series\<SeriesID>.json
 ```
 
 序列结果记录计划偏移、实际开始偏移、开始迟到量、单次耗时、命令反馈、数据路径、导出文件大小和 SHA-256。LabSolutions 原始数据和软件界面仍是判断仪器是否实际完成动作的依据。

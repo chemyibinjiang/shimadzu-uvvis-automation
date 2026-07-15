@@ -242,7 +242,7 @@ class LabSolutionsClient:
 
     def __init__(
         self,
-        command_dir: str | Path = r"C:\UVVisControl",
+        command_dir: str | Path = r"D:\UVVis-Automation\control",
         *,
         mode: str = "spectrum",
         timeout: float = 600.0,

@@ -1,6 +1,6 @@
 # Shimadzu UV-Vis Automation
 
-通过岛津 **LabSolutions UV-Vis 自动控制文本交换功能**执行可审计的 Spectrum 测量和重复完整光谱采集。
+通过岛津 **LabSolutions UV-Vis 自动控制文本交换功能**规划四种 UV-Vis 模式，并执行可审计的 Spectrum 测量和重复完整光谱采集。
 
 本项目不直接访问仪器 USB、串口或底层驱动。LabSolutions 负责连接仪器、执行已保存的方法、保存原始数据和自动导出结果；本项目负责命令调度、安全校验、结果关联和审计。
 
@@ -20,8 +20,8 @@ Python <- CSV/TXT/XLSX automatic export <- LabSolutions UV-Vis
 | 重复完整 Spectrum | 已实现 | 使用单调时钟按 `Command=111` start-to-start 时间间隔调度 |
 | `start/stop/step` 兼容入口 | 已实现 | 只匹配已登记且参数完全一致的 `.vspm`，不会现场生成方法 |
 | 多个目标波长 | 已实现为校验和元数据 | 完整光谱仍会采集；`--wavelengths` 不代表离散多波长测量 |
-| Photometric 离散多波长 | 尚未开放 | 需要在真实控制电脑上验收 `.vphm/.vphd` 和导出结构 |
-| Time Course 固定波长时间曲线 | 尚未开放 | 时间间隔和总时长需预先保存在 `.vtcm` 中 |
+| 四模式 MCP 规划 | 已实现 | Spectrum、Photometric、Quantitation、Time Course 的请求校验、模板选择和命令计划 |
+| Photometric/Quantitation/Time Course 执行 | 尚未开放 | 需要真实方法文件、结果结构和保存/关闭流程的现场验收 |
 | USB、串口或底层仪器 API | 不提供 | 当前岛津集成边界是 LabSolutions 上层文本交换 |
 
 核心安全能力：
@@ -44,7 +44,7 @@ Python <- CSV/TXT/XLSX automatic export <- LabSolutions UV-Vis
 
 ```toml
 [scan_profiles.default]
-method_file = "C:\\UVVis-Data\\Parameter\\growth_scan_300_900.vspm"
+method_file = "D:\\UVVis-Automation\\methods\\growth_scan_300_900.vspm"
 start_nm = 300.0
 stop_nm = 900.0
 step_nm = 1.0
@@ -70,7 +70,7 @@ step_nm = 1.0
 
 ### 固定波长时间曲线
 
-如果实验需要固定一个或多个波长的高时间分辨率曲线，应在 LabSolutions Time Course 中建立 `.vtcm` 方法。自动控制手册的 `Command=400/410/411` 负责加载方法、设置样品和开始测量；采样波长、时间间隔和总时长仍由 `.vtcm` 定义。
+如果实验需要固定一个或多个波长的高时间分辨率曲线，应在 LabSolutions Time Course 中建立 `.vtmm` 方法。本机程序组件使用 `.vtmm/.vtmd`，自动控制手册示例使用 `.vtcm`；以本机“另存为”的实际格式为准。`Command=400/410/411` 负责加载方法、设置样品和开始测量，采样波长、时间间隔和总时长仍由方法定义。
 
 更完整的说明见 [扫描请求与 profile 解析](docs/profile-resolution.md)、[时间步长控制](docs/time-step-control.md) 和 [波长控制](docs/wavelength-control.md)。
 
@@ -94,7 +94,7 @@ cd shimadzu-uvvis-automation
 
 powershell.exe -NoProfile -ExecutionPolicy Bypass `
   -File .\scripts\setup-control-pc.ps1 `
-  -MethodFile C:\UVVis-Data\Parameter\growth_scan_300_900.vspm `
+  -MethodFile D:\UVVis-Automation\methods\growth_scan_300_900.vspm `
   -ScanStartNm 300 `
   -ScanStopNm 900 `
   -ScanStepNm 1
@@ -128,18 +128,20 @@ SIMULATOR ACCEPTANCE PASSED
 
 1. 在 LabSolutions UV-Vis 中保存并人工验证 Spectrum 参数文件 `.vspm`。
 2. 在 `Tools -> Customize -> Automatic Control` 设置命令接收目录。手册默认目录为 `C:\UVVisControl`。
-3. 设置测量后自动导出 CSV、TXT 或 Excel 到 `C:\UVVis-Data\Export`。
+3. 设置测量后自动导出 CSV、TXT 或 Excel 到 `D:\UVVis-Automation\export`。
 4. 让导出文件名包含或以 `SampleID` 开头。
 5. 打开 `Instrument -> Automatic Control`，保持窗口处于等待命令状态。
 
 推荐目录：
 
 ```text
-C:\UVVisControl
-C:\UVVis-Data\Parameter
-C:\UVVis-Data\Data
-C:\UVVis-Data\Export
-C:\UVVis-Automation\Logs
+D:\UVVis-Automation\control
+D:\UVVis-Automation\methods
+D:\UVVis-Automation\methods\generated
+D:\UVVis-Automation\templates
+D:\UVVis-Automation\data
+D:\UVVis-Automation\export
+D:\UVVis-Automation\logs
 ```
 
 首次验收建议只使用 ASCII 路径、样品名和 SampleID。
@@ -244,7 +246,7 @@ LabSolutions 已进入自动控制等待状态后，只发送 `Command=0`：
 默认日志目录：
 
 ```text
-C:\UVVis-Automation\Logs
+D:\UVVis-Automation\logs
 ```
 
 | 输出 | 内容 |
@@ -252,14 +254,14 @@ C:\UVVis-Automation\Logs
 | `<日期>\..._cmd<N>_<request-id>.json` | 单条命令、参数、反馈、耗时和异常 |
 | `runs\<SampleID>.json` | 单次测量、数据路径、时间和导出 SHA-256 |
 | `series\<SeriesID>.json` | 序列计划、实际开始偏移、迟到量和各次结果 |
-| `C:\UVVis-Data\Data\<SampleID>.vspd` | LabSolutions 原始 Spectrum 数据 |
+| `D:\UVVis-Automation\data\<SampleID>.vspd` | LabSolutions 原始 Spectrum 数据 |
 | CSV/TXT/XLSX | LabSolutions 按预设格式自动导出的结果 |
 
 序列模式要求每次导出匹配模式唯一。推荐配置：
 
 ```toml
 [export]
-directory = "C:\\UVVis-Data\\Export"
+directory = "D:\\UVVis-Automation\\export"
 pattern = "{sample_id}*.csv"
 timeout_seconds = 120.0
 stable_seconds = 2.0
@@ -314,6 +316,7 @@ stable_seconds = 2.0
 ## 文档
 
 - [AI tutor 的 UV-Vis MCP 服务](docs/mcp-server.md)
+- [四种测量模式与方法模板](docs/four-mode-methods.md)
 - [LabSolutions 自动控制交接说明](docs/labsolutions-operation.md)
 - [设备连接来源记录](docs/vendor-communication-and-manual-notes.md)
 - [控制电脑现场验收手册](docs/control-pc-acceptance.md)
@@ -353,7 +356,7 @@ python -m unittest discover -s tests -v
 
 - LabSolutions DB/CS 文件标识和权限
 - Photometric 离散多波长方法
-- Time Course `.vtcm/.vtcd` 流程
+- Time Course `.vtmm/.vtmd`（手册版本可能为 `.vtcm`）流程
 - 多联池批量测量
 - 自动进样、抽吸、排出和清洗附件
 - 与反应器或生长系统联动

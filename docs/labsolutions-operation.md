@@ -25,20 +25,20 @@ LabSolutions 执行一条命令 -> 岛津 UV-Vis
 1. 在 LabSolutions UV-Vis 中建立并保存测量参数文件，例如：
 
    ```text
-   C:\UVVis-Data\Parameter\growth_scan_300_900.vspm
+   D:\UVVis-Automation\methods\growth_scan_300_900.vspm
    ```
 
 2. 在 LabSolutions 中设置测量完成后自动导出，建议固定到：
 
    ```text
-   C:\UVVis-Data\Export
+   D:\UVVis-Automation\export
    ```
 
 3. 推荐导出字段包括样品名、样品 ID、测量时间、波长、吸光度/透过率和峰表。
 4. 在 `Tools -> Customize -> Automatic Control` 设置命令接收目录。手册默认目录为：
 
    ```text
-   C:\UVVisControl
+   D:\UVVis-Automation\control
    ```
 
 5. 打开 `Instrument -> Automatic Control` 并保持窗口运行。
@@ -78,7 +78,7 @@ Command=1
 
 ```text
 Command=100
-ParameterFileName=C:\UVVis-Data\Parameter\growth_scan_300_900.vspm
+ParameterFileName=D:\UVVis-Automation\methods\growth_scan_300_900.vspm
 ```
 
 ### 校正
@@ -111,7 +111,7 @@ WL=500.0
 
 ```text
 Command=110
-DataFileName=C:\UVVis-Data\Data\run_20260711_001.vspd
+DataFileName=D:\UVVis-Automation\data\run_20260711_001.vspd
 SampleName=Au_growth_01
 SampleID=run_20260711_001
 ```

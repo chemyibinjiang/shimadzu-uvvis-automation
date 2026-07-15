@@ -1,10 +1,12 @@
 [CmdletBinding()]
 param(
-    [string] $CommandDir = 'C:\UVVisControl',
-    [string] $ExportDir = 'C:\UVVis-Data\Export',
-    [string] $DataDir = 'C:\UVVis-Data\Data',
-    [string] $MethodFile = 'C:\UVVis-Data\Parameter\growth_scan_300_900.vspm',
-    [string] $AuditDir = 'C:\UVVis-Automation\Logs',
+    [string] $CommandDir = 'D:\UVVis-Automation\control',
+    [string] $ExportDir = 'D:\UVVis-Automation\export',
+    [string] $DataDir = 'D:\UVVis-Automation\data',
+    [string] $MethodFile = 'D:\UVVis-Automation\methods\growth_scan_300_900.vspm',
+    [string] $TemplateDir = 'D:\UVVis-Automation\templates',
+    [string] $GeneratedMethodDir = 'D:\UVVis-Automation\methods\generated',
+    [string] $AuditDir = 'D:\UVVis-Automation\logs',
     [double] $ScanStartNm = 300.0,
     [double] $ScanStopNm = 900.0,
     [double] $ScanStepNm = 1.0,
@@ -71,7 +73,15 @@ if ($LASTEXITCODE -ne 0) {
     throw 'The local Python environment failed its self-check.'
 }
 
-foreach ($directory in @($CommandDir, $ExportDir, $DataDir, $AuditDir, (Split-Path -Parent $MethodFile))) {
+foreach ($directory in @(
+    $CommandDir,
+    $ExportDir,
+    $DataDir,
+    $AuditDir,
+    $TemplateDir,
+    $GeneratedMethodDir,
+    (Split-Path -Parent $MethodFile)
+)) {
     if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
         New-Item -ItemType Directory -Path $directory -Force | Out-Null
     }
@@ -120,6 +130,29 @@ correction = "none"
 discharge_after_measurement = false
 allow_unicode_identifiers = false
 
+[method_generation]
+output_directory = "$(ConvertTo-TomlPath $GeneratedMethodDir)"
+
+[method_templates.spectrum_absorbance]
+mode = "spectrum"
+signal_type = "absorbance"
+method_file = "$(ConvertTo-TomlPath (Join-Path $TemplateDir 'spectrum_absorbance.vspm'))"
+
+[method_templates.photometric_absorbance]
+mode = "photometric"
+signal_type = "absorbance"
+method_file = "$(ConvertTo-TomlPath (Join-Path $TemplateDir 'photometric_absorbance.vphm'))"
+
+[method_templates.quantitation_absorbance]
+mode = "quantitation"
+signal_type = "absorbance"
+method_file = "$(ConvertTo-TomlPath (Join-Path $TemplateDir 'quantitation_absorbance.vqum'))"
+
+[method_templates.time_course_absorbance]
+mode = "time_course"
+signal_type = "absorbance"
+method_file = "$(ConvertTo-TomlPath (Join-Path $TemplateDir 'time_course_absorbance.vtmm'))"
+
 [scan_profiles.default]
 method_file = "$(ConvertTo-TomlPath $MethodFile)"
 start_nm = $(ConvertTo-InvariantNumber $ScanStartNm)
@@ -143,6 +176,8 @@ Write-Host ''
 Write-Host "Before the live test, place the real .vspm method at: $MethodFile"
 Write-Host "Configure LabSolutions Automatic Control to watch: $CommandDir"
 Write-Host "Configure LabSolutions automatic export to write: $ExportDir"
+Write-Host "Save the four operator-verified base methods under: $TemplateDir"
+Write-Host "Save parameter-specific method copies under: $GeneratedMethodDir"
 Write-Host "Verify the saved method range is: $ScanStartNm to $ScanStopNm nm, interval $ScanStepNm nm"
 if ($ScanSpeedNmPerMinute -gt 0) {
     Write-Host "Verify the saved method scan speed is: $ScanSpeedNmPerMinute nm/min"

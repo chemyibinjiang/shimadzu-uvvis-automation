@@ -39,7 +39,7 @@ AI tutor 或上层语言模型负责把自然语言转换为结构化参数。MC
 
 ```toml
 [scan_profiles.visible_400_700_1nm]
-method_file = "C:\\UVVis-Data\\Parameter\\visible_400_700_1nm.vspm"
+method_file = "D:\\UVVis-Automation\\methods\\visible_400_700_1nm.vspm"
 start_nm = 400.0
 stop_nm = 700.0
 step_nm = 1.0
@@ -49,7 +49,7 @@ step_nm = 1.0
 
 ```toml
 [scan_profiles.visible_700_400_1nm]
-method_file = "C:\\UVVis-Data\\Parameter\\visible_700_400_1nm.vspm"
+method_file = "D:\\UVVis-Automation\\methods\\visible_700_400_1nm.vspm"
 start_nm = 700.0
 stop_nm = 400.0
 step_nm = 1.0
