@@ -26,6 +26,7 @@ from .client import (
 from .configuration import ControlSettings, ScanProfile, load_settings
 from .diagnostics import run_diagnostics
 from .profiles import ScanProfileRegistry, SpectrumScanRequest
+from .runtime_manager import LabSolutionsRuntimeManager, settings_for_mode
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,9 +97,7 @@ def _add_spectrum_options(
     command.add_argument(
         "--discharge", action=argparse.BooleanOptionalAction, default=None
     )
-    command.add_argument(
-        "--correction", choices=("none", "auto", "baseline", "zero")
-    )
+    command.add_argument("--correction", choices=("none", "auto", "baseline", "zero"))
     command.add_argument("--start-wl", type=float)
     command.add_argument("--end-wl", type=float)
     command.add_argument("--wavelength", type=float)
@@ -148,6 +147,14 @@ def _build_parser() -> argparse.ArgumentParser:
         "--write-check",
         action="store_true",
         help="Write harmless probe files to configured directories",
+    )
+
+    subparsers.add_parser(
+        "ensure-ready",
+        help=(
+            "Start Spectrum, configure Automatic Control, enter Waiting, and "
+            "verify Command=0 / Return=0"
+        ),
     )
 
     recover = subparsers.add_parser(
@@ -380,7 +387,9 @@ def _select_scan_profile(
         or settings.method_file
     )
     if method_file is None:
-        raise ValueError("no Spectrum method file configured; use --method or [spectrum]")
+        raise ValueError(
+            "no Spectrum method file configured; use --method or [spectrum]"
+        )
 
     if profile is None:
         matching_method = [
@@ -495,20 +504,18 @@ def _resolve_spectrum_run(
     args: argparse.Namespace, settings: ControlSettings
 ) -> ResolvedSpectrumRun:
     sample_id = args.sample_id or datetime.now().strftime("run_%Y%m%d_%H%M%S")
-    allow_unicode = (
-        args.allow_unicode_identifiers or settings.allow_unicode_identifiers
-    )
+    allow_unicode = args.allow_unicode_identifiers or settings.allow_unicode_identifiers
     _validate_identifiers(args.sample_name, sample_id, allow_unicode=allow_unicode)
 
     method_file, scan_profile = _select_scan_profile(args, settings)
-    requested_wavelengths = _requested_wavelengths(
-        args.wavelengths, scan_profile
-    )
+    requested_wavelengths = _requested_wavelengths(args.wavelengths, scan_profile)
 
     data_file = args.data_file
     if data_file is None:
         if settings.data_dir is None:
-            raise ValueError("no data directory configured; use --data-file or [spectrum]")
+            raise ValueError(
+                "no data directory configured; use --data-file or [spectrum]"
+            )
         data_file = settings.data_dir / f"{sample_id}.vspd"
 
     measurement_mode = (
@@ -521,9 +528,7 @@ def _resolve_spectrum_run(
         if args.discharge is not None
         else settings.discharge_after_measurement
     )
-    connect = (
-        args.connect if args.connect is not None else settings.connect_before_run
-    )
+    connect = args.connect if args.connect is not None else settings.connect_before_run
     disconnect = (
         args.disconnect
         if args.disconnect is not None
@@ -537,7 +542,9 @@ def _resolve_spectrum_run(
         wavelength=args.wavelength,
     )
 
-    export_dir = None if args.no_wait_export else (args.export_dir or settings.export_dir)
+    export_dir = (
+        None if args.no_wait_export else (args.export_dir or settings.export_dir)
+    )
     if export_dir is None and not args.no_wait_export:
         raise ValueError(
             "no export directory configured; configure [export] or use --no-wait-export"
@@ -557,9 +564,7 @@ def _resolve_spectrum_run(
         else settings.stable_seconds
     )
 
-    commands: list[dict[str, Any]] = [
-        {"command": 0, "name": "hello", "parameters": {}}
-    ]
+    commands: list[dict[str, Any]] = [{"command": 0, "name": "hello", "parameters": {}}]
     if connect:
         commands.append({"command": 1, "name": "connect", "parameters": {}})
     commands.append(
@@ -791,9 +796,7 @@ def _series_commands(series: ResolvedSpectrumSeries) -> list[dict[str, Any]]:
             planned = dict(command)
             planned["series_index"] = index + 1
             if command["command"] == 111:
-                planned["scheduled_offset_seconds"] = (
-                    index * series.interval_seconds
-                )
+                planned["scheduled_offset_seconds"] = index * series.interval_seconds
             commands.append(planned)
     if first.disconnect:
         commands.append({"command": 2, "name": "disconnect", "parameters": {}})
@@ -835,9 +838,7 @@ def _run_manifest_path(settings: ControlSettings, run_id: str) -> Path | None:
     return settings.audit_dir / "runs" / f"{run_id}.json"
 
 
-def _series_manifest_path(
-    settings: ControlSettings, series_id: str
-) -> Path | None:
+def _series_manifest_path(settings: ControlSettings, series_id: str) -> Path | None:
     if settings.audit_dir is None:
         return None
     return settings.audit_dir / "series" / f"{series_id}.json"
@@ -899,17 +900,13 @@ def _execute_spectrum_series(
             "series_id": series.series_id,
             "series_index": point.index,
             "sample_name": run.sample_name,
-            "started_at_utc": point.started_at_utc.isoformat(
-                timespec="milliseconds"
-            ),
+            "started_at_utc": point.started_at_utc.isoformat(timespec="milliseconds"),
             "completed_at_utc": point.completed_at_utc.isoformat(
                 timespec="milliseconds"
             ),
             "elapsed_seconds": round(point.elapsed_seconds, 6),
             "scheduled_offset_seconds": point.scheduled_offset_seconds,
-            "actual_start_offset_seconds": round(
-                point.actual_start_offset_seconds, 6
-            ),
+            "actual_start_offset_seconds": round(point.actual_start_offset_seconds, 6),
             "start_lateness_seconds": round(point.start_lateness_seconds, 6),
             "method_file": str(run.method_file),
             "data_file": str(run.data_file),
@@ -976,6 +973,14 @@ def main(argv: list[str] | None = None) -> int:
             _print_json(report.as_dict())
             return 0 if report.ok else 1
 
+        if args.action == "ensure-ready":
+            runtime_settings = settings_for_mode(settings, settings.mode)
+            ready = LabSolutionsRuntimeManager(runtime_settings).ensure_ready(
+                allow_reconfigure=True
+            )
+            _print_json({"ok": True, **ready.as_dict()})
+            return 0
+
         client = _build_client(settings, enable_audit=args.action != "recover")
         if args.action == "recover":
             before = client.recovery_snapshot()
@@ -1009,9 +1014,7 @@ def main(argv: list[str] | None = None) -> int:
             }
             recovery_audit: str | None = None
             if settings.audit_dir is not None:
-                timestamp = datetime.now(timezone.utc).strftime(
-                    "%Y%m%dT%H%M%S_%fZ"
-                )
+                timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S_%fZ")
                 path = settings.audit_dir / "recovery" / f"{timestamp}.json"
                 try:
                     write_json_atomic(path, recovery_record)

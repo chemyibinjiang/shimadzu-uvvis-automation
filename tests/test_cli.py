@@ -6,11 +6,48 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import MappingProxyType
+from unittest.mock import patch
 
+from shimadzu_uvvis.client import Feedback
 from shimadzu_uvvis.cli import main
+from shimadzu_uvvis.runtime_manager import RuntimeReady
 
 
 class CliTests(unittest.TestCase):
+    def test_ensure_ready_reports_verified_runtime_state(self) -> None:
+        ready = RuntimeReady(
+            process_id=1234,
+            window_handle=5678,
+            launched=True,
+            command_directory=Path(r"D:\UVVis-Automation\control"),
+            command_directory_changed=True,
+            waiting_status="Automatic Control - Waiting",
+            feedback=Feedback(
+                command=0,
+                return_code=0,
+                error="",
+                fields=MappingProxyType({"Command": "0", "Return": "0", "Error": ""}),
+            ),
+        )
+        output = io.StringIO()
+        with patch("shimadzu_uvvis.cli.LabSolutionsRuntimeManager") as manager_class:
+            manager_class.return_value.ensure_ready.return_value = ready
+            with contextlib.redirect_stdout(output):
+                exit_code = main(["--mode", "photometric", "ensure-ready"])
+
+        payload = json.loads(output.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(payload["state"], "READY")
+        self.assertEqual(payload["hello"]["return_code"], 0)
+        manager_class.return_value.ensure_ready.assert_called_once_with(
+            allow_reconfigure=True
+        )
+        runtime_settings = manager_class.call_args.args[0]
+        self.assertEqual(runtime_settings.mode, "photometric")
+        self.assertIn("/APP:Photometric", runtime_settings.runtime.arguments)
+
     def test_spectrum_defaults_to_safe_plan_without_writing_command(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -22,15 +59,15 @@ class CliTests(unittest.TestCase):
             config.write_text(
                 f"""
 [labsolutions]
-command_dir = "{(root / 'control').as_posix()}"
+command_dir = "{(root / "control").as_posix()}"
 
 [export]
-directory = "{(root / 'export').as_posix()}"
+directory = "{(root / "export").as_posix()}"
 pattern = "{{sample_id}}*.csv"
 
 [spectrum]
 method_file = "{method.as_posix()}"
-data_dir = "{(root / 'data').as_posix()}"
+data_dir = "{(root / "data").as_posix()}"
 
 [scan_profiles.default]
 method_file = "{method.as_posix()}"
@@ -39,7 +76,7 @@ stop_nm = 900.0
 step_nm = 1.0
 
 [audit]
-directory = "{(root / 'audit').as_posix()}"
+directory = "{(root / "audit").as_posix()}"
 """.strip(),
                 encoding="utf-8",
             )
@@ -138,15 +175,15 @@ directory = "{(root / 'audit').as_posix()}"
             config.write_text(
                 f"""
 [labsolutions]
-command_dir = "{(root / 'control').as_posix()}"
+command_dir = "{(root / "control").as_posix()}"
 
 [export]
-directory = "{(root / 'export').as_posix()}"
+directory = "{(root / "export").as_posix()}"
 pattern = "{{sample_id}}*.csv"
 
 [spectrum]
 method_file = "{method.as_posix()}"
-data_dir = "{(root / 'data').as_posix()}"
+data_dir = "{(root / "data").as_posix()}"
 
 [scan_profiles.default]
 method_file = "{method.as_posix()}"
@@ -156,7 +193,7 @@ step_nm = 1.0
 scan_speed_nm_per_min = 600.0
 
 [audit]
-directory = "{(root / 'audit').as_posix()}"
+directory = "{(root / "audit").as_posix()}"
 """.strip(),
                 encoding="utf-8",
             )

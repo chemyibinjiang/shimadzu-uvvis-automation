@@ -19,8 +19,8 @@ METHOD_FILE_EXTENSIONS: Mapping[MeasurementMode, tuple[str, ...]] = MappingProxy
         "spectrum": (".vspm",),
         "photometric": (".vphm",),
         "quantitation": (".vqum",),
-        # The installed UVnavi build uses .vtmm; the automatic-control manual
-        # documents .vtcm. Accept both until the local Save dialog is verified.
+        # The local UVnavi 1.13 Save dialog was verified to use .vtmm. The
+        # automatic-control manual documents .vtcm, so accept both versions.
         "time_course": (".vtmm", ".vtcm"),
     }
 )
@@ -42,6 +42,19 @@ class MethodTemplate:
     mode: MeasurementMode
     method_file: Path
     signal_type: str
+    sha256: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class RuntimeSettings:
+    enabled: bool
+    executable: Path
+    arguments: tuple[str, ...]
+    startup_timeout_seconds: float
+    ui_timeout_seconds: float
+    ui_message_timeout_seconds: float
+    hello_timeout_seconds: float
+    configure_command_directory: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,9 +79,11 @@ class ControlSettings:
     discharge_after_measurement: bool
     allow_unicode_identifiers: bool
     audit_dir: Path | None
+    result_dir: Path | None
     scan_profiles: Mapping[str, ScanProfile]
     method_templates: Mapping[str, MethodTemplate]
     generated_method_dir: Path
+    runtime: RuntimeSettings
 
 
 def _section(config: Mapping[str, Any], name: str) -> Mapping[str, Any]:
@@ -104,6 +119,17 @@ def _text(section: Mapping[str, Any], key: str, default: str) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{key} must be a string")
     return value
+
+
+def _text_list(
+    section: Mapping[str, Any], key: str, default: tuple[str, ...]
+) -> tuple[str, ...]:
+    value = section.get(key, list(default))
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise ValueError(f"{key} must be an array of strings")
+    if any("\r" in item or "\n" in item for item in value):
+        raise ValueError(f"{key} entries must be single-line strings")
+    return tuple(value)
 
 
 def _path(
@@ -156,10 +182,7 @@ def _scan_profiles(
             scan_speed_nm_per_min = _float(
                 raw_profile, "scan_speed_nm_per_min", float("nan")
             )
-            if (
-                not math.isfinite(scan_speed_nm_per_min)
-                or scan_speed_nm_per_min <= 0
-            ):
+            if not math.isfinite(scan_speed_nm_per_min) or scan_speed_nm_per_min <= 0:
                 raise ValueError(
                     f"scan profile {name!r} scan_speed_nm_per_min must be "
                     "a finite number greater than zero"
@@ -186,9 +209,7 @@ def _method_templates(
         mode = _text(raw_template, "mode", "")
         if mode not in METHOD_FILE_EXTENSIONS:
             choices = ", ".join(METHOD_FILE_EXTENSIONS)
-            raise ValueError(
-                f"method template {name!r} mode must be one of: {choices}"
-            )
+            raise ValueError(f"method template {name!r} mode must be one of: {choices}")
         method_file = _path(raw_template, "method_file", base_dir)
         if method_file is None:
             raise ValueError(f"method template {name!r} requires method_file")
@@ -204,11 +225,22 @@ def _method_templates(
                 f"method template {name!r} signal_type must contain only "
                 "ASCII letters, digits, underscores, or hyphens"
             )
+        raw_sha256 = raw_template.get("sha256")
+        sha256: str | None = None
+        if raw_sha256 is not None:
+            if not isinstance(raw_sha256, str) or not re.fullmatch(
+                r"[0-9A-Fa-f]{64}", raw_sha256
+            ):
+                raise ValueError(
+                    f"method template {name!r} sha256 must be 64 hexadecimal characters"
+                )
+            sha256 = raw_sha256.upper()
         templates[name] = MethodTemplate(
             name=name,
             mode=mode,
             method_file=method_file,
             signal_type=signal_type,
+            sha256=sha256,
         )
     return MappingProxyType(templates)
 
@@ -225,7 +257,9 @@ def load_settings(path: str | Path | None = None) -> ControlSettings:
     export = _section(config, "export")
     spectrum = _section(config, "spectrum")
     audit = _section(config, "audit")
+    results = _section(config, "results")
     method_generation = _section(config, "method_generation")
+    runtime = _section(config, "runtime")
 
     mode = _text(lab, "mode", "spectrum")
     if mode not in {"spectrum", "quantitation", "photometric", "time_course"}:
@@ -239,9 +273,7 @@ def load_settings(path: str | Path | None = None) -> ControlSettings:
 
     settings = ControlSettings(
         config_path=config_path,
-        command_dir=_path(
-            lab, "command_dir", base_dir, r"D:\UVVis-Automation\control"
-        )
+        command_dir=_path(lab, "command_dir", base_dir, r"D:\UVVis-Automation\control")
         or Path(r"D:\UVVis-Automation\control"),
         mode=mode,
         timeout_seconds=_float(lab, "timeout_seconds", 600.0),
@@ -261,10 +293,9 @@ def load_settings(path: str | Path | None = None) -> ControlSettings:
         discharge_after_measurement=_bool(
             spectrum, "discharge_after_measurement", False
         ),
-        allow_unicode_identifiers=_bool(
-            spectrum, "allow_unicode_identifiers", False
-        ),
+        allow_unicode_identifiers=_bool(spectrum, "allow_unicode_identifiers", False),
         audit_dir=_path(audit, "directory", base_dir),
+        result_dir=_path(results, "directory", base_dir),
         scan_profiles=_scan_profiles(config, base_dir),
         method_templates=_method_templates(config, base_dir),
         generated_method_dir=(
@@ -276,12 +307,35 @@ def load_settings(path: str | Path | None = None) -> ControlSettings:
             )
             or Path(r"D:\UVVis-Automation\methods\generated")
         ),
+        runtime=RuntimeSettings(
+            enabled=_bool(runtime, "enabled", False),
+            executable=(
+                _path(runtime, "executable", base_dir, r"D:\UVNavi.exe")
+                or Path(r"D:\UVNavi.exe")
+            ),
+            arguments=_text_list(runtime, "arguments", ("/APP:Spectrum",)),
+            startup_timeout_seconds=_float(runtime, "startup_timeout_seconds", 30.0),
+            ui_timeout_seconds=_float(runtime, "ui_timeout_seconds", 15.0),
+            ui_message_timeout_seconds=_float(
+                runtime, "ui_message_timeout_seconds", 5.0
+            ),
+            hello_timeout_seconds=_float(runtime, "hello_timeout_seconds", 15.0),
+            configure_command_directory=_bool(
+                runtime, "configure_command_directory", True
+            ),
+        ),
     )
     positive_values = {
         "timeout_seconds": settings.timeout_seconds,
         "poll_interval_seconds": settings.poll_interval_seconds,
         "lock_timeout_seconds": settings.lock_timeout_seconds,
         "export timeout_seconds": settings.export_timeout_seconds,
+        "runtime startup_timeout_seconds": (settings.runtime.startup_timeout_seconds),
+        "runtime ui_timeout_seconds": settings.runtime.ui_timeout_seconds,
+        "runtime ui_message_timeout_seconds": (
+            settings.runtime.ui_message_timeout_seconds
+        ),
+        "runtime hello_timeout_seconds": settings.runtime.hello_timeout_seconds,
     }
     for name, value in positive_values.items():
         if value <= 0:

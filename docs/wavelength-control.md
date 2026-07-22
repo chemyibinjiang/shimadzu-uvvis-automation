@@ -142,12 +142,17 @@ Command=300  测定准备，加载 .vphm 并设置 .vphd 数据文件
 Command=310  设置样品信息
 Command=311  执行 Photometric 测量
 Command=320  保存数据文件
+Command=321  关闭数据文件
 ```
+
+自动控制手册第 5.13.4 和 5.13.5 节只定义保存和关闭 `.vphd`，没有 CSV 导出命令。本项目在
+`320/321` 均返回 `0` 后，直接读取 OLE 容器中的 `Sample Table/Column Data/Axxx.x` 流，生成
+标准长表 CSV。只有 `.vphd` 结构无法识别时才等待 LabSolutions 外部导出。
 
 当前仓库尚未开放这个执行流程，原因是仍需在真实控制电脑上确认：
 
 - `.vphm` 中多个波长的结果表结构
-- `Command=320` 与自动 CSV/Excel 输出的先后关系
+- 其他 LabSolutions 版本的 `.vphd` 列流结构是否保持兼容
 - 单样品和多样品表的保存行为
 - 多联池、抽吸和排出附件的实际动作
 
@@ -185,4 +190,4 @@ step_nm = 1.0
 - 扫描方向、扫描速度和响应时间对生长动力学时间分辨率的影响
 - 是否存在官方支持的外部方法参数化方式；没有书面确认前不要编辑 `.vspm`
 - Photometric 多波长方法的最大点数、顺序和导出格式
-- `.vphd` 保存和自动 CSV/Excel 输出的完成时点
+- 其他 LabSolutions 版本或信号类型的 `.vphd` 内部列命名

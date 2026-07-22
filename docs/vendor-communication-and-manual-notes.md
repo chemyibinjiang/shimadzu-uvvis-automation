@@ -65,6 +65,10 @@ SHA-256：`CF713062807A56E4DDA7F3E8209828C375182774E27F826C614BF798ADDC04B4`
 
 以下为已核对事实的摘要，不替代原手册。
 
+原始手册已保存为
+[LabSolutionsUV-VisAutoControl.pdf](manuals/LabSolutionsUV-VisAutoControl.pdf)，SHA-256 为
+`86E803B287145F6F451D7BCC455B8B7AA98EC34C6727D63A28C8C85423BAC2F4`。
+
 | 手册位置 | 已核对事实 | 本项目处理 |
 | --- | --- | --- |
 | 前言使用注意事项 | LabSolutions UV-Vis 不支持 Unicode；数值输入必须使用半角数字。 | 首次现场验收要求路径、样品名、SampleID 和文件名使用 ASCII。 |
@@ -73,7 +77,7 @@ SHA-256：`CF713062807A56E4DDA7F3E8209828C375182774E27F826C614BF798ADDC04B4`
 | 1.3 | 一个命令文件只能记载一条命令；执行命令时无法接收下一条命令；反馈文件发出后才接收下一条。 | 客户端对高层流程加进程间锁，避免并发写入同一命令目录。 |
 | 1.3 | Spectrum 使用 `SPC_CMD.txt` 和 `SPC_RES.txt`；Quantitation 使用 `QUA_CMD.txt` 和 `QUA_RES.txt`；Photometric 使用 `PHO_CMD.txt` 和 `PHO_RES.txt`；Time Course 使用 `TMC_CMD.txt` 和 `TMC_RES.txt`。 | 四模式 MCP 请求和命令计划已实现；真实执行目前只开放 Spectrum。 |
 | 1.4-1.6 | 命令文件第一行是 `Command=<编号>`，后续行为参数；反馈文件包含 `Command`、`Return`、`Error`；命令和反馈文件使用 UTF-8。 | 文件编码固定为 UTF-8，但现场文本内容仍按 ASCII 保守执行。 |
-| 5.8 | `Command=21` 可按方法自动校正、范围基线校正或单波长调零。 | 首次真实测量默认不自动校正，只有操作人员确认后才启用。 |
+| 5.8 | `Command=21` 可按方法自动校正、范围基线校正或单波长调零；液体测量通常在空白样品（溶剂）状态下校正。 | 首次真实测量默认不自动校正，只有操作人员确认空白放置后才启用；不在上层代码中手工扣暗电流或空气能量。 |
 | 5.11.1 | `Command=100` 加载 Spectrum 参数文件；参数文件必须与登记机型匹配。 | 配置文件登记 `.vspm`，现场验收要求人工核对波长范围和扫描参数。 |
 | 5.11.2 | `Command=110` 设置 Spectrum 样品信息、数据文件名、SampleID 等。 | 本项目统一使用 run ID 关联样品、`.vspd`、导出文件和审计记录。 |
 | 5.11.3 | `Command=111` 执行 Spectrum 测定；执行前需连接仪器并加载参数文件；多联池和抽吸附件需先初始化。 | 首次测试强制 `MeasurementMode=2`、`Discharge=OFF`，避免误测全部池位或触发排出。 |
@@ -87,6 +91,6 @@ SHA-256：`CF713062807A56E4DDA7F3E8209828C375182774E27F826C614BF798ADDC04B4`
 - 连接仪器由 LabSolutions 完成，本项目只发送 `Command=1` 等文本命令。
 - 测量参数由 `.vspm`、`.vphm`、`.vqum` 或 `.vtmm/.vtcm` 方法文件保存，本项目不解析这些专有文件。
 - `Command=111` 不提供起始波长、终止波长、步长、扫描速度或每点等待时间参数。
-- CSV、TXT、Excel 输出由 LabSolutions 自动输出设置决定。本项目只等待导出目录中新文件稳定后记录大小和 SHA-256。
+- Spectrum 的 CSV、TXT、Excel 输出由 LabSolutions 自动输出设置决定。Photometric 手册第 5.13.4/5.13.5 节只提供 `320` 保存和 `321` 关闭；本项目直接解析 `.vphd` 的命名吸光度列并生成标准 CSV，外部导出仅作为兼容回退。
 - 命令目录、数据目录、导出目录和日志目录首次建议使用 ASCII 路径。
 - 与自动进样、抽吸、排出、清洗、多联池、反应器联动和长期无人值守相关的动作，必须在真实控制电脑和仪器上逐项验收后再开放。

@@ -15,20 +15,26 @@ from .client import (
     SpectrumSeriesResult,
     SpectrumSeriesSample,
 )
+from .batch_workflow import SpectrumBatchController, SpectrumBatchError
 from .configuration import (
     ControlSettings,
     MeasurementMode,
     MethodTemplate,
+    RuntimeSettings,
     ScanProfile,
     load_settings,
 )
 from .measurements import (
+    MeasurementPurpose,
     MeasurementPlanError,
     MeasurementRequest,
     MethodTemplateRegistry,
+    PlanningMode,
     ResolvedMethodTemplate,
+    RoutedMeasurementRequest,
     build_measurement_request,
     resolve_method_template,
+    route_measurement_request,
 )
 from .profiles import (
     AmbiguousScanProfileError,
@@ -39,6 +45,11 @@ from .profiles import (
     SpectrumScanRequest,
     UnknownScanProfileError,
     resolve_scan_profile,
+)
+from .runtime_manager import (
+    LabSolutionsRuntimeError,
+    LabSolutionsRuntimeManager,
+    RuntimeReady,
 )
 
 __all__ = [
@@ -53,27 +64,37 @@ __all__ = [
     "LabSolutionsRecoveryRequiredError",
     "LabSolutionsTimeoutError",
     "MeasurementMode",
+    "MeasurementPurpose",
     "MeasurementPlanError",
     "MeasurementRequest",
     "MethodTemplate",
     "MethodTemplateRegistry",
+    "PlanningMode",
     "ScanProfile",
     "ResolvedScanProfile",
     "ResolvedMethodTemplate",
+    "RoutedMeasurementRequest",
+    "RuntimeReady",
+    "RuntimeSettings",
     "ScanProfileNotFoundError",
     "ScanProfileRegistry",
     "ScanProfileResolutionError",
     "SpectrumScanRequest",
     "SpectrumScheduleOverrunError",
+    "SpectrumBatchController",
+    "SpectrumBatchError",
     "SpectrumRunResult",
     "SpectrumSeriesPointResult",
     "SpectrumSeriesResult",
     "SpectrumSeriesSample",
     "UnknownScanProfileError",
+    "LabSolutionsRuntimeError",
+    "LabSolutionsRuntimeManager",
     "build_measurement_request",
     "load_settings",
     "resolve_scan_profile",
     "resolve_method_template",
+    "route_measurement_request",
 ]
 
 __version__ = "0.5.0"

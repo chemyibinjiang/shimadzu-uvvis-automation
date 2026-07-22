@@ -35,13 +35,36 @@ LabSolutions 执行一条命令 -> 岛津 UV-Vis
    ```
 
 3. 推荐导出字段包括样品名、样品 ID、测量时间、波长、吸光度/透过率和峰表。
-4. 在 `Tools -> Customize -> Automatic Control` 设置命令接收目录。手册默认目录为：
+4. 在 `Tools -> Customize -> Automatic Control` 设置命令接收目录。官方手册第 2.1 节给出的默认目录是：
 
    ```text
-   D:\UVVis-Automation\control
+   C:\UVVisControl
    ```
 
+   本项目运行配置使用 `D:\UVVis-Automation\control`，因此必须在 LabSolutions 中显式修改，
+   并在退出自动控制后重新进入，使设置生效。不能因为自动控制窗口显示“正在待机”就假定
+   两边目录一致。
+
 5. 打开 `Instrument -> Automatic Control` 并保持窗口运行。
+
+官方手册要求用户在外部控制开始前启动测定程序并切换到自动控制模式，文本交换协议本身
+没有“进入自动控制”的命令。本项目的 `LabSolutionsRuntimeManager` 在同一 Windows 登录会话
+中启动 `UVNavi.exe /APP:Spectrum`，按窗口菜单文字定位
+`Instrument -> Automatic Control`，并通过 Win32/UI Automation 触发。不要使用截图坐标。
+运行时管理器只有在窗口显示等待状态且 `Command=0` 返回 `Return=0` 后才能报告 `READY`；
+任一条件失败时不得继续发送连接、校正或测量命令。
+
+加载新方法后，LabSolutions 可能弹出“已更改参数文件。是否执行基线校正？”对话框。该提示不作为
+学生确认门禁，也不允许人工点击。运行时管理器按进程、对话框类别、提示文本以及“是/否”控件 ID
+严格识别，并通过 Win32 消息自动选择“否”。真正的空白基线校正只在学生确认空白已放好后由
+`Command=21, CorrectionType=1` 执行。该流程不使用 Computer Use 或截图坐标。
+
+可独立执行无动作验收：
+
+```powershell
+python -m shimadzu_uvvis.cli `
+  --config D:\UVVis-Automation\control-pc.toml ensure-ready
+```
 
 手册说明命令与反馈文件使用 UTF-8，但同时说明 LabSolutions UV-Vis 不支持 Unicode 文本输入。现场首次验收应按保守规则执行：路径、样品名、SampleID、数据文件名和导出文件名只使用英文字母、数字、下划线、点号和短横线，数值只使用半角数字。
 
@@ -107,6 +130,10 @@ CorrectionType=3
 WL=500.0
 ```
 
+对于吸光度溶液测量，优先在样品位和参比位放置合适的空白溶液后使用
+`CorrectionType=1`。不要在上层程序中把导出吸光度再手工减暗电流或空气能量。完整 SOP 见
+[吸光度空白与基线校正](absorbance-correction.md)。
+
 ### 设置样品信息
 
 ```text
@@ -164,6 +191,11 @@ Error=""
 
 文本交换协议负责触发测量；结果格式和自动导出位置需要提前在 LabSolutions 中设置。本项目在 `Command=111` 成功后监控导出目录，只有文件大小和修改时间持续稳定一段时间才返回，避免解析仍在写入的文件。
 
+Spectrum 原始文件稳定后，执行器优先读取 `.vspd` 中的 X/Y 双精度数据流；结构无法识别时才等待
+自动导出 CSV。结果的波长范围、数据间隔和点数必须与已加载 `.vspm` 完全一致，然后在样品目录生成
+`result.csv`、`result.json` 和 `result.png`，并同步发布到仓库 `outputs/<batch>/<sample>`。原始顺序
+可以是升序或降序，标准结果统一为升序；缺点、重复点、越界点和网格外波长均拒绝发布。
+
 自动控制手册中 Spectrum 测定的主数据文件是 `.vspd`。CSV、TXT 或 Excel 不是通过一条自动控制 `EXPORT CSV` 命令生成，而是由 LabSolutions 的自动输出设置在测定完成后生成。因此现场必须提前确认自动输出菜单位置、格式、字段、命名规则、覆盖策略和完成时点。
 
 推荐让样品 ID、LabSolutions 数据文件名和导出文件名使用同一个 run ID，例如：
@@ -178,7 +210,7 @@ run_20260711_001
 
 LabSolutions Spectrum 的 `Command=111` 不接收起始波长、终止波长、数据间隔、扫描速度或每点等待时间。这些参数必须先保存在 `.vspm` 方法中；上层程序只能加载经过验证的方法。
 
-生长实验需要重复完整光谱时，使用 `scripts\run-growth-series.ps1` 设置采集次数和相邻 `Command=111` 的 start-to-start 时间间隔。固定一个或多个波长的高时间分辨率曲线则应使用 LabSolutions Time Course `.vtcm` 方法，其中采样间隔和总时长仍由方法定义。
+生长实验需要重复完整光谱时，使用 `scripts\run-growth-series.ps1` 设置采集次数和相邻 `Command=111` 的 start-to-start 时间间隔。固定一个或多个波长的高时间分辨率曲线则应使用 LabSolutions Time Course 方法；本机 1.13 已确认方法扩展名为 `.vtmm`，其中采样间隔和总时长仍由方法定义。
 
 详细配置、公式、命令示例和超时处置见 [LabSolutions UV-Vis 时间步长控制](time-step-control.md)。
 

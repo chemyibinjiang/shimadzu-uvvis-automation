@@ -7,6 +7,18 @@ poll_interval_seconds = 0.2
 lock_timeout_seconds = 5.0
 encoding = "utf-8"
 
+[runtime]
+# Windows-only runtime gate. It starts Spectrum, sets the Automatic Control
+# directory, enters Waiting, and verifies Command=0 / Return=0.
+enabled = false
+executable = "D:\\UVNavi.exe"
+arguments = ["/APP:Spectrum"]
+startup_timeout_seconds = 30.0
+ui_timeout_seconds = 15.0
+ui_message_timeout_seconds = 5.0
+hello_timeout_seconds = 15.0
+configure_command_directory = true
+
 [export]
 # LabSolutions itself must be configured to export here after measurement.
 directory = "D:\\UVVis-Automation\\export"
@@ -20,7 +32,7 @@ data_dir = "D:\\UVVis-Automation\\data"
 
 # Safe first-test defaults: current cell only, no automatic discharge.
 measurement_mode = 2
-connect_before_run = false
+connect_before_run = true
 disconnect_after_run = false
 correction = "none"
 discharge_after_measurement = false
@@ -34,21 +46,25 @@ output_directory = "D:\\UVVis-Automation\\methods\\generated"
 mode = "spectrum"
 signal_type = "absorbance"
 method_file = "D:\\UVVis-Automation\\templates\\spectrum_absorbance.vspm"
+# Optional after operator verification: sha256 = "<64 hexadecimal characters>"
 
 [method_templates.photometric_absorbance]
 mode = "photometric"
 signal_type = "absorbance"
 method_file = "D:\\UVVis-Automation\\templates\\photometric_absorbance.vphm"
+# Optional after operator verification: sha256 = "<64 hexadecimal characters>"
 
 [method_templates.quantitation_absorbance]
 mode = "quantitation"
 signal_type = "absorbance"
 method_file = "D:\\UVVis-Automation\\templates\\quantitation_absorbance.vqum"
+# Optional after operator verification: sha256 = "<64 hexadecimal characters>"
 
 [method_templates.time_course_absorbance]
 mode = "time_course"
 signal_type = "absorbance"
 method_file = "D:\\UVVis-Automation\\templates\\time_course_absorbance.vtmm"
+# Optional after operator verification: sha256 = "<64 hexadecimal characters>"
 
 # Metadata must exactly match the settings saved inside the .vspm file.
 [scan_profiles.full_300_900_1nm]
@@ -61,3 +77,7 @@ step_nm = 1.0
 
 [audit]
 directory = "D:\\UVVis-Automation\\logs"
+
+[results]
+# Small, AI-facing normalized outputs may be published in the repository.
+directory = "C:\\Users\\11979\\Documents\\GitHub\\shimadzu-uvvis-automation\\outputs"

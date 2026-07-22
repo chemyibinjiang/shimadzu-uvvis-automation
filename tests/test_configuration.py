@@ -43,6 +43,8 @@ directory = "audit"
             self.assertEqual(settings.export_dir, (root / "export").resolve())
             self.assertEqual(settings.measurement_mode, 2)
             self.assertFalse(settings.discharge_after_measurement)
+            self.assertFalse(settings.runtime.enabled)
+            self.assertEqual(settings.runtime.arguments, ("/APP:Spectrum",))
             self.assertEqual(settings.scan_profiles["default"].start_nm, 300.0)
             self.assertEqual(settings.scan_profiles["default"].stop_nm, 900.0)
             self.assertEqual(
@@ -58,6 +60,36 @@ directory = "audit"
             )
 
             with self.assertRaisesRegex(ValueError, "measurement_mode"):
+                load_settings(config_path)
+
+    def test_runtime_settings_are_loaded_and_validated(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config_path = root / "runtime.toml"
+            config_path.write_text(
+                """
+[runtime]
+enabled = true
+executable = "UVNavi.exe"
+arguments = ["/APP:Spectrum"]
+hello_timeout_seconds = 7.5
+""".strip(),
+                encoding="utf-8",
+            )
+
+            settings = load_settings(config_path)
+
+            self.assertTrue(settings.runtime.enabled)
+            self.assertEqual(
+                settings.runtime.executable, (root / "UVNavi.exe").resolve()
+            )
+            self.assertEqual(settings.runtime.hello_timeout_seconds, 7.5)
+
+            config_path.write_text(
+                '[runtime]\narguments = "/APP:Spectrum"\n',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "array of strings"):
                 load_settings(config_path)
 
     def test_method_template_extension_is_validated_by_mode(self) -> None:
@@ -94,6 +126,34 @@ method_file = "template{extension}"
                         settings.method_templates["time_course"].method_file.suffix,
                         extension,
                     )
+
+    def test_method_template_sha256_is_validated_and_normalized(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            config_path = Path(temporary_directory) / "hash.toml"
+            config_path.write_text(
+                """
+[method_templates.spectrum]
+mode = "spectrum"
+method_file = "template.vspm"
+sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+""".strip(),
+                encoding="utf-8",
+            )
+
+            settings = load_settings(config_path)
+            self.assertEqual(settings.method_templates["spectrum"].sha256, "A" * 64)
+
+            config_path.write_text(
+                """
+[method_templates.spectrum]
+mode = "spectrum"
+method_file = "template.vspm"
+sha256 = "not-a-hash"
+""".strip(),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(ValueError, "sha256"):
+                load_settings(config_path)
 
 
 if __name__ == "__main__":

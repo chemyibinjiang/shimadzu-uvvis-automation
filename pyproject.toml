@@ -20,7 +20,9 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
   "Topic :: Scientific/Engineering :: Chemistry"
 ]
-dependencies = []
+dependencies = [
+  "olefile>=0.47,<1",
+]
 
 [project.optional-dependencies]
 mcp = [

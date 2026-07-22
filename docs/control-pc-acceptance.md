@@ -76,7 +76,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 7. 打开 `Instrument -> Automatic Control`。
 8. 确认自动控制窗口显示等待状态并保持该窗口打开。
 
-手册默认命令目录为 `C:\UVVisControl`。Spectrum 使用：
+官方默认命令接收目录为 `C:\UVVisControl`。本项目改用
+`D:\UVVis-Automation\control`，必须在 `Tools -> Customize -> Automatic Control`
+中显式设置，并重新进入自动控制。窗口显示等待状态只能证明界面模式已切换；仍须执行下面
+的 `Command=0` 验证实际监听目录和文本交换链路。
+
+Spectrum 使用：
 
 ```text
 SPC_CMD.txt
@@ -109,6 +114,16 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 `automatic_control` 在此阶段显示 `warn` 是正常的，因为只有下一阶段的 Hello 能确认 LabSolutions 正在监听。
 
 ## 6. C 级：Hello 通道测试
+
+推荐先让运行时管理器自动校验或设置目录、进入 Waiting 并执行 Hello：
+
+```powershell
+python -m shimadzu_uvvis.cli `
+  --config D:\UVVis-Automation\control-pc.toml ensure-ready
+```
+
+输出必须同时包含 `state=READY`、D 盘 `command_directory`、Waiting 状态文字和
+`hello.return_code=0`。这条命令不连接仪器、不移动附件、不校正、不测量。
 
 确认 LabSolutions 已显示自动控制等待状态，然后运行：
 

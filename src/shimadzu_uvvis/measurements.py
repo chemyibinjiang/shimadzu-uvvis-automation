@@ -6,7 +6,7 @@ import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Mapping, Sequence
+from typing import Literal, Mapping, Sequence
 
 from .configuration import (
     METHOD_FILE_EXTENSIONS,
@@ -22,6 +22,12 @@ DATA_FILE_EXTENSIONS: Mapping[MeasurementMode, str] = {
     "quantitation": ".vqud",
     "time_course": ".vtmd",
 }
+SPECTRUM_DATA_INTERVALS_NM = (0.01, 0.05, 0.1, 0.2, 0.5, 1.0, 2.0, 5.0)
+# LabSolutions UV-Vis 1.13 displays "The number of registered wavelengths is
+# 10" when an eleventh Photometric wavelength is added.
+PHOTOMETRIC_METHOD_WAVELENGTH_LIMIT = 10
+PlanningMode = Literal["auto", "spectrum", "photometric", "quantitation", "time_course"]
+MeasurementPurpose = Literal["measurement", "quantitation"]
 _IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9_-]+\Z")
 
 
@@ -58,6 +64,21 @@ class MeasurementRequest:
     mode: MeasurementMode
     signal_type: str
     parameters: Mapping[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class RoutedMeasurementRequest:
+    requested_mode: PlanningMode
+    request: MeasurementRequest
+    reason: str
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "requested_mode": self.requested_mode,
+            "selected_mode": self.request.mode,
+            "reason": self.reason,
+            "selected_before_labsolutions_start": True,
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,12 +175,12 @@ def build_measurement_request(
         "time_course": {"wavelength_nm", "interval_seconds", "duration_seconds"},
     }[mode]
     unexpected = sorted(
-        name for name, value in supplied.items() if value is not None and name not in allowed
+        name
+        for name, value in supplied.items()
+        if value is not None and name not in allowed
     )
     if unexpected:
-        raise MeasurementPlanError(
-            f"{mode} does not accept: {', '.join(unexpected)}"
-        )
+        raise MeasurementPlanError(f"{mode} does not accept: {', '.join(unexpected)}")
 
     if mode == "spectrum":
         if start_nm is None or stop_nm is None or step_nm is None:
@@ -171,7 +192,9 @@ def build_measurement_request(
         )
         parameters = scan.as_dict()
     elif mode == "photometric":
-        parameters = {"wavelengths_nm": list(_wavelengths(wavelengths_nm, "wavelengths_nm"))}
+        parameters = {
+            "wavelengths_nm": list(_wavelengths(wavelengths_nm, "wavelengths_nm"))
+        }
     elif mode == "quantitation":
         if wavelength_nm is None:
             raise MeasurementPlanError("quantitation requires wavelength_nm")
@@ -203,6 +226,211 @@ def build_measurement_request(
     return MeasurementRequest(mode, normalized_signal, parameters)
 
 
+def _is_spectrum_interval_supported(step_nm: float) -> bool:
+    return any(
+        math.isclose(step_nm, supported, abs_tol=1e-9)
+        for supported in SPECTRUM_DATA_INTERVALS_NM
+    )
+
+
+def _range_wavelengths(
+    scan: SpectrumScanRequest,
+    *,
+    start_nm: float,
+    stop_nm: float,
+    direction: ScanDirection | None,
+) -> list[float]:
+    descending = direction == "descending" or (direction is None and start_nm > stop_nm)
+    first = scan.upper_nm if descending else scan.lower_nm
+    delta = -scan.step_nm if descending else scan.step_nm
+    return [round(first + index * delta, 12) for index in range(scan.point_count)]
+
+
+def route_measurement_request(
+    *,
+    mode: PlanningMode = "auto",
+    measurement_purpose: MeasurementPurpose = "measurement",
+    signal_type: str = "absorbance",
+    start_nm: float | None = None,
+    stop_nm: float | None = None,
+    step_nm: float | None = None,
+    direction: ScanDirection | None = None,
+    wavelength_nm: float | None = None,
+    wavelengths_nm: Sequence[float] | None = None,
+    interval_seconds: float | None = None,
+    duration_seconds: float | None = None,
+) -> RoutedMeasurementRequest:
+    """Select a LabSolutions mode before opening an editor or touching hardware."""
+
+    if measurement_purpose not in ("measurement", "quantitation"):
+        raise MeasurementPlanError(
+            "measurement_purpose must be 'measurement' or 'quantitation'"
+        )
+    if mode != "auto":
+        request = build_measurement_request(
+            mode=mode,
+            signal_type=signal_type,
+            start_nm=start_nm,
+            stop_nm=stop_nm,
+            step_nm=step_nm,
+            direction=direction,
+            wavelength_nm=wavelength_nm,
+            wavelengths_nm=wavelengths_nm,
+            interval_seconds=interval_seconds,
+            duration_seconds=duration_seconds,
+        )
+        if measurement_purpose == "quantitation" and mode != "quantitation":
+            raise MeasurementPlanError(
+                "measurement_purpose='quantitation' requires quantitation mode"
+            )
+        return RoutedMeasurementRequest(
+            requested_mode=mode,
+            request=request,
+            reason=f"The caller explicitly requested {mode} mode.",
+        )
+
+    range_values = (start_nm, stop_nm, step_nm)
+    has_range = any(value is not None for value in range_values)
+    has_times = interval_seconds is not None or duration_seconds is not None
+
+    if measurement_purpose == "quantitation":
+        if (
+            has_range
+            or wavelengths_nm is not None
+            or has_times
+            or direction is not None
+        ):
+            raise MeasurementPlanError(
+                "automatic quantitation routing accepts wavelength_nm only"
+            )
+        request = build_measurement_request(
+            mode="quantitation",
+            signal_type=signal_type,
+            wavelength_nm=wavelength_nm,
+        )
+        return RoutedMeasurementRequest(
+            requested_mode="auto",
+            request=request,
+            reason=(
+                "A concentration/standard-curve purpose at one wavelength requires "
+                "Quantitation mode."
+            ),
+        )
+
+    if has_range:
+        if any(value is None for value in range_values):
+            raise MeasurementPlanError(
+                "automatic range routing requires start_nm, stop_nm, and step_nm"
+            )
+        if wavelength_nm is not None or wavelengths_nm is not None or has_times:
+            raise MeasurementPlanError(
+                "a wavelength range cannot be combined with fixed, discrete, or time fields"
+            )
+        spectrum = build_measurement_request(
+            mode="spectrum",
+            signal_type=signal_type,
+            start_nm=start_nm,
+            stop_nm=stop_nm,
+            step_nm=step_nm,
+            direction=direction,
+        )
+        normalized_step = float(spectrum.parameters["step_nm"])
+        if _is_spectrum_interval_supported(normalized_step):
+            return RoutedMeasurementRequest(
+                requested_mode="auto",
+                request=spectrum,
+                reason=(
+                    f"{normalized_step:g} nm is supported by the installed Spectrum "
+                    "editor, so the range remains a continuous Spectrum scan."
+                ),
+            )
+        assert start_nm is not None and stop_nm is not None
+        wavelengths = _range_wavelengths(
+            SpectrumScanRequest.from_boundaries(
+                start_nm, stop_nm, normalized_step, direction=direction
+            ),
+            start_nm=float(start_nm),
+            stop_nm=float(stop_nm),
+            direction=direction,
+        )
+        photometric = build_measurement_request(
+            mode="photometric",
+            signal_type=signal_type,
+            wavelengths_nm=wavelengths,
+        )
+        supported = ", ".join(f"{value:g}" for value in SPECTRUM_DATA_INTERVALS_NM)
+        return RoutedMeasurementRequest(
+            requested_mode="auto",
+            request=photometric,
+            reason=(
+                f"{normalized_step:g} nm is not a Spectrum data interval on this "
+                f"installation ({supported} nm are supported). Photometric mode "
+                f"represents the exact {len(wavelengths)}-point wavelength list."
+            ),
+        )
+
+    if wavelengths_nm is not None:
+        if wavelength_nm is not None or has_times or direction is not None:
+            raise MeasurementPlanError(
+                "discrete wavelengths cannot be combined with fixed or time fields"
+            )
+        request = build_measurement_request(
+            mode="photometric",
+            signal_type=signal_type,
+            wavelengths_nm=wavelengths_nm,
+        )
+        return RoutedMeasurementRequest(
+            requested_mode="auto",
+            request=request,
+            reason="A discrete wavelength list requires Photometric mode.",
+        )
+
+    if has_times:
+        if direction is not None:
+            raise MeasurementPlanError(
+                "direction is not valid for a fixed-wavelength time course"
+            )
+        request = build_measurement_request(
+            mode="time_course",
+            signal_type=signal_type,
+            wavelength_nm=wavelength_nm,
+            interval_seconds=interval_seconds,
+            duration_seconds=duration_seconds,
+        )
+        return RoutedMeasurementRequest(
+            requested_mode="auto",
+            request=request,
+            reason=(
+                "A fixed wavelength with an interval and duration requires Time "
+                "Course mode."
+            ),
+        )
+
+    if wavelength_nm is not None:
+        if direction is not None:
+            raise MeasurementPlanError(
+                "direction is not valid for a fixed-wavelength measurement"
+            )
+        request = build_measurement_request(
+            mode="photometric",
+            signal_type=signal_type,
+            wavelengths_nm=[wavelength_nm],
+        )
+        return RoutedMeasurementRequest(
+            requested_mode="auto",
+            request=request,
+            reason=(
+                "A single absorbance reading without a standard-curve purpose uses "
+                "Photometric mode."
+            ),
+        )
+
+    raise MeasurementPlanError(
+        "automatic mode routing requires a wavelength range, a wavelength list, "
+        "one wavelength, or time-course fields"
+    )
+
+
 def generated_method_name(request: MeasurementRequest, extension: str) -> str:
     parameters = request.parameters
     if request.mode == "spectrum":
@@ -225,6 +453,26 @@ def generated_method_name(request: MeasurementRequest, extension: str) -> str:
             f"{_number_token(float(parameters['duration_seconds']))}s"
         )
     return f"{stem}_{request.signal_type}{extension}"
+
+
+def method_generation_requests(
+    request: MeasurementRequest,
+) -> tuple[MeasurementRequest, ...]:
+    """Split one logical request into method-sized LabSolutions requests."""
+
+    if request.mode != "photometric":
+        return (request,)
+    wavelengths = list(request.parameters["wavelengths_nm"])
+    return tuple(
+        build_measurement_request(
+            mode="photometric",
+            signal_type=request.signal_type,
+            wavelengths_nm=wavelengths[
+                index : index + PHOTOMETRIC_METHOD_WAVELENGTH_LIMIT
+            ],
+        )
+        for index in range(0, len(wavelengths), PHOTOMETRIC_METHOD_WAVELENGTH_LIMIT)
+    )
 
 
 def resolve_method_template(

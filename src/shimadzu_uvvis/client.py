@@ -274,14 +274,14 @@ class LabSolutionsClient:
         self.workflow_lock_path = (
             self.command_dir / f".shimadzu_uvvis_{mode}.workflow.lock"
         )
-        self.recovery_path = (
-            self.command_dir / f".shimadzu_uvvis_{mode}.recovery.json"
-        )
+        self.recovery_path = self.command_dir / f".shimadzu_uvvis_{mode}.recovery.json"
         self._lock = threading.Lock()
         self._workflow_state_lock = threading.Lock()
         self._workflow_owner: int | None = None
         self._workflow_depth = 0
-        self.audit_recorder = AuditRecorder(audit_dir) if audit_dir is not None else None
+        self.audit_recorder = (
+            AuditRecorder(audit_dir) if audit_dir is not None else None
+        )
         self.audit_warnings: list[str] = []
 
     @contextmanager
@@ -326,6 +326,13 @@ class LabSolutionsClient:
                 self._workflow_depth = 0
             process_lock.release()
 
+    @contextmanager
+    def workflow_session(self) -> Iterator[None]:
+        """Reserve this LabSolutions mode across a caller-defined command group."""
+
+        with self._workflow_lock():
+            yield
+
     @_workflow_locked
     def send_command(
         self,
@@ -366,9 +373,7 @@ class LabSolutionsClient:
                     )
                     with process_lock:
                         if self.recovery_path.exists():
-                            raise LabSolutionsRecoveryRequiredError(
-                                self.recovery_path
-                            )
+                            raise LabSolutionsRecoveryRequiredError(self.recovery_path)
                         if self.command_path.exists():
                             raise LabSolutionsBusyError(
                                 f"A command is already waiting at {self.command_path}. "
@@ -531,9 +536,7 @@ class LabSolutionsClient:
         marker: object = None
         if self.recovery_path.exists():
             try:
-                marker = json.loads(
-                    self.recovery_path.read_text(encoding="utf-8-sig")
-                )
+                marker = json.loads(self.recovery_path.read_text(encoding="utf-8-sig"))
             except (OSError, UnicodeError, json.JSONDecodeError) as exc:
                 marker = {"unreadable": str(exc)}
 
@@ -585,9 +588,7 @@ class LabSolutionsClient:
                         marker.get("command") if isinstance(marker, dict) else None
                     )
                     feedback_command = (
-                        feedback.get("command")
-                        if isinstance(feedback, dict)
-                        else None
+                        feedback.get("command") if isinstance(feedback, dict) else None
                     )
                     if marker_command != feedback_command and not force:
                         raise LabSolutionsRecoveryRequiredError(self.recovery_path)
@@ -729,9 +730,7 @@ class LabSolutionsClient:
         if connect:
             feedback.append(self.send_command(1))
 
-        feedback.append(
-            self.send_command(100, ParameterFileName=Path(method_file))
-        )
+        feedback.append(self.send_command(100, ParameterFileName=Path(method_file)))
         if correction:
             feedback.append(self.send_command(21, **dict(correction)))
 
@@ -792,7 +791,9 @@ class LabSolutionsClient:
         if measurement_mode not in (1, 2):
             raise ValueError("measurement_mode must be 1 or 2")
         if not math.isfinite(interval_seconds) or interval_seconds <= 0:
-            raise ValueError("interval_seconds must be a finite number greater than zero")
+            raise ValueError(
+                "interval_seconds must be a finite number greater than zero"
+            )
         if (
             not math.isfinite(overrun_tolerance_seconds)
             or overrun_tolerance_seconds < 0
@@ -818,9 +819,7 @@ class LabSolutionsClient:
         preparation: list[Feedback] = [self.send_command(0)]
         if connect:
             preparation.append(self.send_command(1))
-        preparation.append(
-            self.send_command(100, ParameterFileName=Path(method_file))
-        )
+        preparation.append(self.send_command(100, ParameterFileName=Path(method_file)))
         if correction:
             preparation.append(self.send_command(21, **dict(correction)))
 

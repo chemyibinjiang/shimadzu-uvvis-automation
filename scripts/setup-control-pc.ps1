@@ -7,15 +7,21 @@ param(
     [string] $TemplateDir = 'D:\UVVis-Automation\templates',
     [string] $GeneratedMethodDir = 'D:\UVVis-Automation\methods\generated',
     [string] $AuditDir = 'D:\UVVis-Automation\logs',
+    [string] $ResultDir = '',
+    [string] $LabSolutionsExecutable = 'D:\UVNavi.exe',
     [double] $ScanStartNm = 300.0,
     [double] $ScanStopNm = 900.0,
     [double] $ScanStepNm = 1.0,
     [double] $ScanSpeedNmPerMinute = 0.0,
+    [switch] $DisableRuntimeAutomation,
     [switch] $Force
 )
 
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
+if ([string]::IsNullOrWhiteSpace($ResultDir)) {
+    $ResultDir = Join-Path $repoRoot 'outputs'
+}
 $venvPython = Join-Path $repoRoot '.venv\Scripts\python.exe'
 $venvDir = Join-Path $repoRoot '.venv'
 
@@ -80,6 +86,7 @@ foreach ($directory in @(
     $AuditDir,
     $TemplateDir,
     $GeneratedMethodDir,
+    $ResultDir,
     (Split-Path -Parent $MethodFile)
 )) {
     if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
@@ -105,6 +112,7 @@ if ((Test-Path -LiteralPath $configPath) -and -not $Force) {
     if ($ScanSpeedNmPerMinute -gt 0) {
         $scanSpeedLine = "scan_speed_nm_per_min = $(ConvertTo-InvariantNumber $ScanSpeedNmPerMinute)"
     }
+    $runtimeEnabled = if ($DisableRuntimeAutomation) { 'false' } else { 'true' }
     $config = @"
 [labsolutions]
 command_dir = "$(ConvertTo-TomlPath $CommandDir)"
@@ -113,6 +121,16 @@ timeout_seconds = 600.0
 poll_interval_seconds = 0.2
 lock_timeout_seconds = 5.0
 encoding = "utf-8"
+
+[runtime]
+enabled = $runtimeEnabled
+executable = "$(ConvertTo-TomlPath $LabSolutionsExecutable)"
+arguments = ["/APP:Spectrum"]
+startup_timeout_seconds = 30.0
+ui_timeout_seconds = 15.0
+ui_message_timeout_seconds = 5.0
+hello_timeout_seconds = 15.0
+configure_command_directory = true
 
 [export]
 directory = "$(ConvertTo-TomlPath $ExportDir)"
@@ -124,7 +142,7 @@ stable_seconds = 2.0
 method_file = "$(ConvertTo-TomlPath $MethodFile)"
 data_dir = "$(ConvertTo-TomlPath $DataDir)"
 measurement_mode = 2
-connect_before_run = false
+connect_before_run = true
 disconnect_after_run = false
 correction = "none"
 discharge_after_measurement = false
@@ -162,6 +180,9 @@ $scanSpeedLine
 
 [audit]
 directory = "$(ConvertTo-TomlPath $AuditDir)"
+
+[results]
+directory = "$(ConvertTo-TomlPath $ResultDir)"
 "@
     $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
     [System.IO.File]::WriteAllText($configPath, $config, $utf8NoBom)
@@ -171,13 +192,14 @@ directory = "$(ConvertTo-TomlPath $AuditDir)"
 Write-Host ''
 Write-Host 'Setup complete. Next commands:'
 Write-Host '  powershell -ExecutionPolicy Bypass -File .\scripts\test-simulator.ps1'
-Write-Host '  powershell -ExecutionPolicy Bypass -File .\scripts\test-live.ps1 -Ping'
+Write-Host '  .\.venv\Scripts\python.exe -m shimadzu_uvvis.cli --config .\control-pc.toml ensure-ready'
 Write-Host ''
 Write-Host "Before the live test, place the real .vspm method at: $MethodFile"
-Write-Host "Configure LabSolutions Automatic Control to watch: $CommandDir"
+Write-Host "Runtime manager will configure LabSolutions Automatic Control to watch: $CommandDir"
 Write-Host "Configure LabSolutions automatic export to write: $ExportDir"
 Write-Host "Save the four operator-verified base methods under: $TemplateDir"
 Write-Host "Save parameter-specific method copies under: $GeneratedMethodDir"
+Write-Host "Publish normalized AI-facing results under: $ResultDir"
 Write-Host "Verify the saved method range is: $ScanStartNm to $ScanStopNm nm, interval $ScanStepNm nm"
 if ($ScanSpeedNmPerMinute -gt 0) {
     Write-Host "Verify the saved method scan speed is: $ScanSpeedNmPerMinute nm/min"

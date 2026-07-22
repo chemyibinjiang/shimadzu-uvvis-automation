@@ -11,5 +11,6 @@ config.toml
 control-pc.toml
 runtime/
 tmp/
+outputs/
 *.xlsx
 *.xls

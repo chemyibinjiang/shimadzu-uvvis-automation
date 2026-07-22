@@ -1,0 +1,17 @@
+# Add this block to the MCP client's config.toml. This is separate from
+# D:\UVVis-Automation\control-pc.toml, which configures LabSolutions and paths.
+
+[mcp_servers.shimadzu-uvvis]
+type = "stdio"
+command = "C:/Users/11979/anaconda3/python.exe"
+args = [
+  "-m",
+  "shimadzu_uvvis.mcp_server",
+  "--config",
+  "D:/UVVis-Automation/control-pc.toml",
+]
+startup_timeout_sec = 30
+tool_timeout_sec = 900
+
+[mcp_servers.shimadzu-uvvis.env]
+PYTHONIOENCODING = "utf-8"

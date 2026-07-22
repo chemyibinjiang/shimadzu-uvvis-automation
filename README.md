@@ -2,12 +2,13 @@
 
 通过岛津 **LabSolutions UV-Vis 自动控制文本交换功能**规划四种 UV-Vis 模式，并执行可审计的 Spectrum 测量和重复完整光谱采集。
 
-本项目不直接访问仪器 USB、串口或底层驱动。LabSolutions 负责连接仪器、执行已保存的方法、保存原始数据和自动导出结果；本项目负责命令调度、安全校验、结果关联和审计。
+本项目不直接访问仪器 USB、串口或底层驱动。LabSolutions 负责连接仪器、执行已保存的方法和保存原始数据；本项目负责命令调度、安全校验、结果解析、结果关联和审计。Spectrum 可以使用 LabSolutions 预设导出，Photometric 则直接解析已保存的 `.vphd`。
 
 ```text
 Python -> SPC_CMD.txt -> LabSolutions UV-Vis -> Shimadzu UV-Vis
 Python <- SPC_RES.txt <- LabSolutions UV-Vis
 Python <- CSV/TXT/XLSX automatic export <- LabSolutions UV-Vis
+Python <- .vphd OLE data <- LabSolutions UV-Vis
 ```
 
 > 当前代码、单元测试和文件交换模拟器已经通过验收。真实岛津仪器上的方法参数、附件行为、扫描耗时和自动导出仍需按本文的分级流程在控制电脑上验证。
@@ -18,10 +19,15 @@ Python <- CSV/TXT/XLSX automatic export <- LabSolutions UV-Vis
 | --- | --- | --- |
 | 单次完整 Spectrum | 已实现 | 加载已验证的 `.vspm`，设置样品信息，执行 `Command=111` |
 | 重复完整 Spectrum | 已实现 | 使用单调时钟按 `Command=111` start-to-start 时间间隔调度 |
-| `start/stop/step` 兼容入口 | 已实现 | 只匹配已登记且参数完全一致的 `.vspm`，不会现场生成方法 |
-| 多个目标波长 | 已实现为校验和元数据 | 完整光谱仍会采集；`--wavelengths` 不代表离散多波长测量 |
+| Spectrum 参数化方法生成 | 已实现并现场验证 | 从只读模板 Save As 并重新打开读回；支持本机列出的 `0.01-5 nm` 数据间隔 |
+| 测量模式预路由 | 已实现 | 在启动 LabSolutions 前按请求能力选择模式；`400-700/10 nm` 转为 Photometric 的 31 个精确离散点 |
+| `start/stop/step` 兼容入口 | 已实现 | 旧入口仍只匹配已登记 profile；新 MCP 生成器处理可表示的 Spectrum 请求 |
+| Photometric 离散多波长 | 已实现并现场验证 | 单方法最多 10 点；更长列表自动分段、逐个读回并在测量后合并 |
 | 四模式 MCP 规划 | 已实现 | Spectrum、Photometric、Quantitation、Time Course 的请求校验、模板选择和命令计划 |
-| Photometric/Quantitation/Time Course 执行 | 尚未开放 | 需要真实方法文件、结果结构和保存/关闭流程的现场验收 |
+| 多样品 Spectrum/Photometric MCP 执行 | 已实现 | 持久状态机依次校正基线、测量指定的下一个样品并归档数据 |
+| 四模式基础方法模板 | 已创建并校验 | D 盘真实 LabSolutions 方法文件，配置登记 SHA-256 完整性校验 |
+| Photometric 执行 | 已实现，正在实机验收 | `300/310/311/320/321` 分段执行；直接解析 `.vphd`，生成合并 CSV、JSON、PNG 和最大吸收波长 |
+| Quantitation/Time Course 执行 | 尚未开放 | 需要结果结构和保存流程的现场验收 |
 | USB、串口或底层仪器 API | 不提供 | 当前岛津集成边界是 LabSolutions 上层文本交换 |
 
 核心安全能力：
@@ -30,9 +36,11 @@ Python <- CSV/TXT/XLSX automatic export <- LabSolutions UV-Vis
 - 原子命令写入和完整工作流跨进程互斥
 - 超时后建立恢复标记，禁止状态不明时自动重发
 - 每条命令、每次测量和每个序列均生成 JSON 审计记录
-- 等待 CSV/TXT/XLSX 文件稳定后再计算大小和 SHA-256
+- Spectrum 直接解析 `.vspd` 的 X/Y 数据流并严格验证范围、间隔和点数，无法识别时才等待 CSV；Photometric 关闭 `.vphd` 后直接解析并生成标准结果
 - 每次序列采集使用唯一 SampleID、`.vspd` 路径和导出匹配模式
 - 前一次扫描或导出超时后，在下一次 `Command=111` 之前停止
+- 多样品批次持久记录当前状态，严格拒绝乱序 SampleID 和重复数据路径
+- 批次命令结果不确定时进入 `RECOVERY_REQUIRED`，不自动重试物理动作
 
 ## 波长与时间的含义
 
@@ -80,7 +88,7 @@ step_nm = 1.0
 - Python 3.11 或更高版本
 - 已安装并授权自动控制功能的 LabSolutions UV-Vis
 - 已由操作人员手动验证的 `.vspm` Spectrum 方法
-- 已配置的命令目录、数据目录、自动导出目录和日志目录
+- 已配置的数据目录、自动导出目录和日志目录；命令目录由运行时管理器校验
 
 核心运行时没有第三方 Python 依赖，控制电脑不需要联网安装 Python 包。
 
@@ -127,10 +135,28 @@ SIMULATOR ACCEPTANCE PASSED
 ### 3. 配置 LabSolutions
 
 1. 在 LabSolutions UV-Vis 中保存并人工验证 Spectrum 参数文件 `.vspm`。
-2. 在 `Tools -> Customize -> Automatic Control` 设置命令接收目录。手册默认目录为 `C:\UVVisControl`。
-3. 设置测量后自动导出 CSV、TXT 或 Excel 到 `D:\UVVis-Automation\export`。
-4. 让导出文件名包含或以 `SampleID` 开头。
-5. 打开 `Instrument -> Automatic Control`，保持窗口处于等待命令状态。
+2. 设置测量后自动导出 CSV、TXT 或 Excel 到 `D:\UVVis-Automation\export`。
+3. 让导出文件名包含或以 `SampleID` 开头。
+4. 在 `D:\UVVis-Automation\control-pc.toml` 启用 `[runtime].enabled = true`。
+   MCP 会在启动批次时自动启动 Spectrum、设置 `Tools -> Customize -> Automatic Control`
+   的命令目录、进入 `Instrument -> Automatic Control`，并用 Hello 验证。
+5. 运行时管理器使用 Windows 控件 API，不需要 Computer Use；如果目录、Waiting 或 Hello
+   任一项失败，MCP 不会发送基线或测量命令。
+
+官方手册默认命令目录为 `C:\UVVisControl`，本项目运行目录为：
+
+```text
+D:\UVVis-Automation\control
+```
+
+低级人工验收仍可在 LabSolutions 中检查：
+
+```text
+Tools -> Customize -> Automatic Control
+Instrument -> Automatic Control
+```
+
+但生产批次由运行时管理器执行上述步骤，不要求操作人员每次点击。
 
 推荐目录：
 
@@ -154,7 +180,16 @@ D:\UVVis-Automation\logs
 .\scripts\test-live.ps1
 ```
 
-LabSolutions 已进入自动控制等待状态后，只发送 `Command=0`：
+也可以让运行时管理器完成无动作 Ready 验收：
+
+```powershell
+python -m shimadzu_uvvis.cli `
+  --config D:\UVVis-Automation\control-pc.toml ensure-ready
+```
+
+它只发送 `Command=0`，不会连接仪器、移动附件、校正或测量。
+
+低级手动流程下，LabSolutions 已进入自动控制等待状态后也可以只发送 `Command=0`：
 
 ```powershell
 .\scripts\test-live.ps1 -Ping
@@ -256,6 +291,14 @@ D:\UVVis-Automation\logs
 | `series\<SeriesID>.json` | 序列计划、实际开始偏移、迟到量和各次结果 |
 | `D:\UVVis-Automation\data\<SampleID>.vspd` | LabSolutions 原始 Spectrum 数据 |
 | CSV/TXT/XLSX | LabSolutions 按预设格式自动导出的结果 |
+| `outputs/<batch>/<sample>/result.csv` | AI tutor 使用的标准波长/吸光度点表 |
+| `outputs/<batch>/<sample>/result.json` | 点表、最大吸收波长和来源文件 |
+| `outputs/<batch>/<sample>/result.png` | 合并后的光谱图 |
+
+Spectrum 批次完成 `Command=111` 后，程序优先直接读取 `.vspd` 的 X/Y 双精度数据流；只有文件结构
+无法识别时才等待 LabSolutions 自动导出 CSV。两种来源都必须与方法的波长范围、数据间隔和点数
+完全一致。LabSolutions 即使按高波长到低波长保存，标准结果也统一按波长升序输出。缺点、重复点、
+越界点或网格外波长会使批次进入 `RECOVERY_REQUIRED`，不会发布不完整谱图。
 
 序列模式要求每次导出匹配模式唯一。推荐配置：
 
@@ -315,7 +358,10 @@ stable_seconds = 2.0
 
 ## 文档
 
+- [MCP 客户端 TOML 配置示例](mcp-client.example.toml)
 - [AI tutor 的 UV-Vis MCP 服务](docs/mcp-server.md)
+- [单样品位设备的多样品顺序测量](docs/sample-batches.md)
+- [吸光度空白与基线校正](docs/absorbance-correction.md)
 - [四种测量模式与方法模板](docs/four-mode-methods.md)
 - [LabSolutions 自动控制交接说明](docs/labsolutions-operation.md)
 - [设备连接来源记录](docs/vendor-communication-and-manual-notes.md)

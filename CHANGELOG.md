@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- Route mode-agnostic requests before any LabSolutions or instrument action. Supported
+  range intervals remain Spectrum scans; unsupported intervals such as 10 nm become
+  exact Photometric wavelength lists instead of failing after Spectrum starts.
+- Add automatic structural routing for discrete wavelengths, fixed-wavelength time
+  courses, and quantitation-purpose requests while retaining explicit mode selection.
+- Add a Windows `LabSolutionsRuntimeManager` that launches Spectrum, validates or
+  sets the Automatic Control directory, enters Waiting, and requires a successful
+  `Command=0` / `Return=0` handshake before reporting `READY`.
+- Automatically decline LabSolutions' parameter-change baseline prompt through
+  stable Win32 control IDs after method loading; keep physical baseline correction
+  exclusively behind the guarded `Command=21` batch step.
+- Gate batch start, baseline correction, and every sample measurement on runtime
+  readiness. Only batch start may change runtime settings; physical phases only
+  verify and stop on mismatch.
+- Archive failed side-effect-free Hello probes while refusing to clean or retry
+  recovery records for any physical command.
+- Add guarded `start_uvvis_batch`, `correct_uvvis_baseline`,
+  `measure_next_uvvis_sample`, `get_uvvis_batch_status`, and
+  `abort_uvvis_batch` MCP tools for Spectrum.
+- Persist batch state, baseline identity, exact sample order, command feedback,
+  raw data metadata, and archived export metadata in atomic JSON manifests.
+- Hold the LabSolutions workflow lock across grouped batch commands and stop in
+  `RECOVERY_REQUIRED` after ambiguous command or output failures.
+- Parse Spectrum X/Y streams directly from `.vspd` with automatic-export fallback,
+  validate the exact requested wavelength grid, create normalized CSV/JSON/PNG
+  results, and require repository publication before completing a sample.
 - Add the read-only `plan_uvvis_measurement` MCP tool for Spectrum, Photometric,
   Quantitation, and Time Course requests.
 - Add strict mode-specific parameter validation, method-template selection, generated
