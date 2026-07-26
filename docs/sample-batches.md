@@ -17,19 +17,19 @@ AI tutor 解析实验步骤中的样品列表和测量参数
         ↓
 获得固定顺序、每个样品的独立路径和人工门禁
         ↓
-调用 start_uvvis_batch，准备已验证的 Spectrum 或 Photometric 方法
+调用 start_uvvis_batch，准备已验证的 Spectrum、Photometric 或 Time Course 方法
         ↓
 Runtime Manager 自动校验目录、进入 Waiting，并完成 Hello
         ↓
 提示操作人员放置空白，按方法执行一次基线校正
         ↓
-提示操作人员放入 001_sample_a，并等待确认
+提示操作人员放入可读名称对应的第一个样品，并等待确认
         ↓
 执行该样品的 LabSolutions 命令，等待数据和导出完成
         ↓
 保存原始数据、归档导出文件和 manifest
         ↓
-提示操作人员放入 002_sample_b，并等待新的确认
+提示操作人员放入第二个样品，并等待新的确认
 ```
 
 不同样品不能复用 Spectrum `series` 的定时自动重复流程。`series` 适用于同一样品的重复完整
@@ -37,37 +37,44 @@ Runtime Manager 自动校验目录、进入 Waiting，并完成 Hello
 
 ## 标识与目录
 
-AI Tutor 调用批次规划时传入登录学生的 `student_id` 和当前 `experiment_name`。学生账号目录会去掉
-内部 `stu_` 前缀；批次编号默认按北京时间生成 `uvvis_YYYYMMDD_HHMMSS`。`batch_id` 和输入
+AI Tutor 调用批次规划时传入登录学生的 `student_id`、当前 `experiment_name` 和实验
+`session_id`。学生账号目录会去掉内部 `stu_` 前缀；批次编号默认按北京时间生成
+`uvvis_YYYYMMDD_HHMMSS`。`batch_id` 和输入
 `sample_id` 只允许 ASCII 字母、数字、下划线和连字符。批次规划按输入顺序生成三位序号，并将序号
 加入实际发送给 LabSolutions 的 `SampleID`：
 
 ```text
-D:\UVVis-Automation\data\20240001\uvvis\银纳米粒子的制备与表征\uvvis_20260724_153012\
-  001_sample_a\
-    raw\
-      001_sample_a.vspd
-    export\
-    plot\
-      result.png
-    manifest.json
-  002_sample_b\
-    raw\
-      002_sample_b.vspd
-    export\
-    plot\
-      result.png
-    manifest.json
+D:\AI-Tutor-Data\data\20240001\银纳米粒子的制备与表征\session_001\
+  photos\
+  uvvis\
+    1号样品\
+      1号样品.csv
+      1号样品.json
+      1号样品.png
+      raw\
+        1号样品.vspd
+        measurement-manifest.json
+    2号样品\
+      2号样品.csv
+      2号样品.json
+      2号样品.png
+      raw\
+        2号样品.vspd
+        measurement-manifest.json
+    .batches\
+      uvvis_20260724_153012\
+        batch-manifest.json
 ```
 
-未提供学生和实验上下文的旧调用继续使用兼容目录 `data\<batch_id>\`。学生账号和实验名称必须同时
-提供；路径中的 Windows 非法字符会替换为下划线。
+`student_id`、`experiment_name` 和 `session_id` 必须同时提供。路径中的 Windows 非法字符会替换为
+下划线。同一会话内两个样品名称若清理后得到同一目录名，规划会拒绝执行，避免覆盖已有数据。
+未提供这三个上下文参数的底层兼容调用仍使用 `data\<batch_id>\`，生产 Pad 流程不得使用该形式。
 
 原始数据扩展名由模式决定：Spectrum `.vspd`、Photometric `.vphd`、Quantitation `.vqud`、
 Time Course `.vtmd`。Photometric 超过 10 个波长时，同一个样品的 `raw` 目录包含多个分段
 `.vphd`，但只需要一次样品放置确认。Photometric 执行器直接从每段 `.vphd` 生成标准 CSV；若原始文件结构无法识别，才回退到配置的公共导出目录。后续执行器必须
-按唯一 `SampleID` 匹配完成的文件，再归档到该样品的 `export` 目录并生成 manifest。`plot` 目录
-保存合并后的 `result.csv`、`result.json` 和 `result.png`，并同步到配置的仓库 `outputs` 目录。
+按唯一 `SampleID` 匹配完成的文件，再从公共临时导出目录移动到该样品的 `raw` 目录并生成内部 manifest。样品目录根部
+只保存以可读样品名称命名的最终 `.csv`、`.json` 和 `.png`。
 Spectrum 优先直接解析 `.vspd`，无法识别时回退到 LabSolutions 自动导出 CSV，并要求完整匹配方法
 中的范围、数据间隔和点数；Photometric 优先直接解析 `.vphd`。两种模式均在结果验证及发布成功后
 才完成样品状态。
@@ -87,5 +94,5 @@ Spectrum 优先直接解析 `.vspd`，无法识别时回退到 LabSolutions 自�
    `Command=0` 返回 `Return=0`。基线和样品阶段只验证，禁止现场修改运行时配置。
 
 任何一项不满足时都不能发送测量命令。`plan_uvvis_sample_batch` 是只读工具，只报告计划和冲突，
-不会创建目录、写入命令文件、连接仪器或开始测量。Spectrum/Photometric 执行工具由持久化状态机约束，
+不会创建目录、写入命令文件、连接仪器或开始测量。Spectrum、Photometric 和 Time Course 执行工具由持久化状态机约束，
 完整接口、确认字段和恢复边界见 [UV-Vis MCP 服务](mcp-server.md)。

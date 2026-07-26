@@ -193,7 +193,8 @@ Error=""
 
 Spectrum 原始文件稳定后，执行器优先读取 `.vspd` 中的 X/Y 双精度数据流；结构无法识别时才等待
 自动导出 CSV。结果的波长范围、数据间隔和点数必须与已加载 `.vspm` 完全一致，然后在样品目录生成
-`result.csv`、`result.json` 和 `result.png`，并同步发布到仓库 `outputs/<batch>/<sample>`。原始顺序
+以可读样品名称生成 `.csv`、`.json` 和 `.png`，保存在
+`D:\AI-Tutor-Data\data\<学生账号>\<实验名称>\<会话ID>\uvvis\<样品名称>`。原始顺序
 可以是升序或降序，标准结果统一为升序；缺点、重复点、越界点和网格外波长均拒绝发布。
 
 自动控制手册中 Spectrum 测定的主数据文件是 `.vspd`。CSV、TXT 或 Excel 不是通过一条自动控制 `EXPORT CSV` 命令生成，而是由 LabSolutions 的自动输出设置在测定完成后生成。因此现场必须提前确认自动输出菜单位置、格式、字段、命名规则、覆盖策略和完成时点。

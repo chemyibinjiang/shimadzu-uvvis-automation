@@ -79,9 +79,7 @@ class FakeSpectrumClient:
             self.sample_id = str(parameters["SampleID"])
         if command == 100:
             stem = Path(str(parameters["ParameterFileName"])).stem
-            range_text = stem.removeprefix("spectrum_").removesuffix(
-                "nm_absorbance"
-            )
+            range_text = stem.removeprefix("spectrum_").removesuffix("nm_absorbance")
             lower_text, upper_text, step_text = range_text.split("_")
             lower = float(lower_text.replace("p", "."))
             upper = float(upper_text.replace("p", "."))
@@ -103,9 +101,9 @@ class FakeSpectrumClient:
             self.sample_id = str(parameters["SampleID"])
         if command == 400:
             stem = Path(str(parameters["ParameterFileName"])).stem
-            tokens = stem.removeprefix("time_course_").removesuffix(
-                "_absorbance"
-            ).split("_")
+            tokens = (
+                stem.removeprefix("time_course_").removesuffix("_absorbance").split("_")
+            )
             self.time_course_interval_seconds = float(
                 tokens[1].removesuffix("s").replace("p", ".")
             )
@@ -143,10 +141,13 @@ class FakeSpectrumClient:
             assert self.data_file is not None
             assert self.sample_id is not None
             self.data_file.write_bytes(b"SIMULATED VTMD")
-            point_count = round(
-                self.time_course_duration_seconds
-                / self.time_course_interval_seconds
-            ) + 1
+            point_count = (
+                round(
+                    self.time_course_duration_seconds
+                    / self.time_course_interval_seconds
+                )
+                + 1
+            )
             (self.export_dir / f"{self.sample_id}_result.csv").write_text(
                 "Time (min),Abs.\n"
                 + "".join(
@@ -232,9 +233,7 @@ class SpectrumBatchControllerTests(unittest.TestCase):
         generated = root / "generated" / "spectrum_400_700_1nm_absorbance.vspm"
         generated.write_bytes(b"VERIFIED GENERATED METHOD")
         (
-            root
-            / "generated"
-            / "time_course_400nm_60s_2040s_absorbance.vtmm"
+            root / "generated" / "time_course_400nm_60s_2040s_absorbance.vtmm"
         ).write_bytes(b"VERIFIED TIME COURSE METHOD")
         config = root / "control.toml"
         config.write_text(
@@ -361,15 +360,11 @@ directory = "{(root / "outputs").as_posix()}"
                 self.assertTrue((sample_dir / "manifest.json").is_file())
                 self.assertEqual(len(list((sample_dir / "export").glob("*.csv"))), 2)
                 result = json.loads(
-                    (sample_dir / "export" / "result.json").read_text(
-                        encoding="utf-8"
-                    )
+                    (sample_dir / "export" / "result.json").read_text(encoding="utf-8")
                 )
                 self.assertEqual(result["mode"], "spectrum")
                 self.assertEqual(result["point_count"], 301)
-                self.assertEqual(
-                    result["maximum_absorbance"]["wavelength_nm"], 700.0
-                )
+                self.assertEqual(result["maximum_absorbance"]["wavelength_nm"], 700.0)
                 self.assertTrue((sample_dir / "plot" / "result.png").is_file())
                 published = root / "outputs" / "batch_001" / sample_id
                 self.assertTrue((published / "result.csv").is_file())
@@ -412,7 +407,9 @@ directory = "{(root / "outputs").as_posix()}"
             self.assertFalse(controller.active_batch_path.exists())
             self.assertEqual([item[0] for item in fake.commands], [100])
 
-    def test_nested_student_batch_can_be_reloaded_after_active_marker_is_cleared(self) -> None:
+    def test_nested_student_batch_can_be_reloaded_after_active_marker_is_cleared(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             config, _ = self._fixture(root)
@@ -436,6 +433,7 @@ directory = "{(root / "outputs").as_posix()}"
                 step_nm=1,
                 student_id="stu_20240001",
                 experiment_name="银纳米粒子的制备与表征",
+                session_id="session_001",
             )
 
             started = controller.start(plan, execution_confirmed=True)
@@ -443,12 +441,24 @@ directory = "{(root / "outputs").as_posix()}"
                 root
                 / "data"
                 / "20240001"
-                / "uvvis"
                 / "银纳米粒子的制备与表征"
+                / "session_001"
+                / "uvvis"
+                / ".batches"
                 / batch_id
             )
             self.assertEqual(Path(started["batch_directory"]), expected_directory)
             self.assertTrue((expected_directory / "batch-manifest.json").is_file())
+            result_directory = (
+                root
+                / "data"
+                / "20240001"
+                / "银纳米粒子的制备与表征"
+                / "session_001"
+                / "uvvis"
+                / "1号样品"
+            )
+            self.assertTrue((result_directory / "raw").is_dir())
 
             controller.abort(
                 batch_id,
@@ -462,9 +472,12 @@ directory = "{(root / "outputs").as_posix()}"
             self.assertEqual(status["state"], "ABORTED")
             self.assertEqual(status["student_account"], "20240001")
             self.assertEqual(status["experiment_name"], "银纳米粒子的制备与表征")
+            self.assertEqual(status["session_id"], "session_001")
             self.assertEqual(Path(status["batch_directory"]), expected_directory)
 
-    def test_time_course_batch_executes_400_410_411_and_returns_record_rows(self) -> None:
+    def test_time_course_batch_executes_400_410_411_and_returns_record_rows(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             config, _ = self._fixture(root)
@@ -485,13 +498,14 @@ directory = "{(root / "outputs").as_posix()}"
                 wavelength_nm=400,
                 interval_seconds=60,
                 duration_seconds=2040,
+                student_id="stu_20240001",
+                experiment_name="Ag纳米粒子的制备及应用",
+                session_id="session_kinetics",
             )
 
             started = controller.start(plan, execution_confirmed=True)
             self.assertEqual(started["state"], "WAITING_FOR_BLANK")
-            controller.correct_baseline(
-                "kinetics_400nm", blank_loaded_confirmed=True
-            )
+            controller.correct_baseline("kinetics_400nm", blank_loaded_confirmed=True)
             completed = controller.measure_next(
                 "kinetics_400nm",
                 sample_id="001_sample_2",
@@ -510,12 +524,22 @@ directory = "{(root / "outputs").as_posix()}"
             self.assertEqual(result["point_count"], 35)
             self.assertEqual(result["record_rows"][0]["time_min"], 0.0)
             self.assertEqual(result["record_rows"][-1]["time_min"], 34.0)
-            sample_dir = root / "data" / "kinetics_400nm" / "001_sample_2"
-            self.assertTrue(
-                (sample_dir / "raw" / "001_sample_2.vtmd").is_file()
+            sample_dir = (
+                root
+                / "data"
+                / "20240001"
+                / "Ag纳米粒子的制备及应用"
+                / "session_kinetics"
+                / "uvvis"
+                / "2号 Ag NPs"
             )
-            self.assertTrue((sample_dir / "export" / "result.json").is_file())
-            self.assertTrue((sample_dir / "plot" / "result.png").is_file())
+            self.assertTrue((sample_dir / "raw" / "2号 Ag NPs.vtmd").is_file())
+            self.assertTrue((sample_dir / "2号 Ag NPs.csv").is_file())
+            self.assertTrue((sample_dir / "2号 Ag NPs.json").is_file())
+            self.assertTrue((sample_dir / "2号 Ag NPs.png").is_file())
+            self.assertFalse((sample_dir / "export").exists())
+            self.assertFalse((sample_dir / "plot").exists())
+            self.assertEqual(list((root / "export").glob("*.csv")), [])
 
     def test_start_accepts_command_1_already_connected_feedback(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -647,7 +671,9 @@ directory = "{(root / "outputs").as_posix()}"
                 "process_result:001_sample_a",
             )
 
-    def test_export_timeout_recovers_from_saved_vspd_without_remeasurement(self) -> None:
+    def test_export_timeout_recovers_from_saved_vspd_without_remeasurement(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             config, _ = self._fixture(root)
@@ -691,9 +717,7 @@ directory = "{(root / "outputs").as_posix()}"
                 "shimadzu_uvvis.batch_workflow.normalize_spectrum_data_file",
                 side_effect=normalize_saved_vspd,
             ):
-                recovered = controller.recover_spectrum_result(
-                    "batch_vspd_recovery"
-                )
+                recovered = controller.recover_spectrum_result("batch_vspd_recovery")
 
             self.assertEqual(recovered["state"], "WAITING_FOR_SAMPLE")
             self.assertEqual(recovered["completed_sample_count"], 1)
@@ -874,10 +898,7 @@ directory = "{(root / "outputs").as_posix()}"
             )
             manifest = json.loads(
                 (
-                    root
-                    / "data"
-                    / "batch_reuse_new_connection"
-                    / "batch-manifest.json"
+                    root / "data" / "batch_reuse_new_connection" / "batch-manifest.json"
                 ).read_text(encoding="utf-8")
             )
             self.assertIn(

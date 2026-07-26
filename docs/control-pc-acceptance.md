@@ -30,7 +30,7 @@
 ```text
 D:\UVVis-Automation\control
 D:\UVVis-Automation\methods
-D:\UVVis-Automation\data
+D:\AI-Tutor-Data\data
 D:\UVVis-Automation\export
 D:\UVVis-Automation\logs
 ```
@@ -204,7 +204,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass `
 通过标准：
 
 - 每条命令 `return_code=0`
-- `D:\UVVis-Automation\data` 中产生新的 `.vspd`
+- `D:\AI-Tutor-Data\data\<学生账号>\<实验名称>\<会话ID>\uvvis\<样品名称>\raw` 中产生新的 `.vspd`
 - 自动导出目录产生与本次 SampleID 对应的新文件
 - 输出包含导出文件大小和 SHA-256
 - `Logs\runs\<SampleID>.json` 存在且顶层 `ok=true`

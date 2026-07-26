@@ -28,18 +28,24 @@ def safe_storage_component(
     *,
     strip_student_prefix: bool = False,
 ) -> str:
-    text = unicodedata.normalize("NFKC", value.strip() if isinstance(value, str) else "")
+    text = unicodedata.normalize(
+        "NFKC", value.strip() if isinstance(value, str) else ""
+    )
     if strip_student_prefix and text.lower().startswith("stu_") and len(text) > 4:
         text = text[4:]
     text = _INVALID_WINDOWS_PATH_CHARS.sub("_", text)
     text = re.sub(r"\s+", " ", text).strip(" .")
     if not text:
-        raise StoragePathError(f"{name} must produce a non-empty storage directory name")
+        raise StoragePathError(
+            f"{name} must produce a non-empty storage directory name"
+        )
     if text.upper() in _WINDOWS_RESERVED_NAMES:
         text = f"_{text}"
     text = text[:120].rstrip(" .")
     if not text:
-        raise StoragePathError(f"{name} must produce a non-empty storage directory name")
+        raise StoragePathError(
+            f"{name} must produce a non-empty storage directory name"
+        )
     return text
 
 
@@ -49,15 +55,36 @@ def student_batch_directory(
     *,
     student_id: str | None = None,
     experiment_name: str | None = None,
+    session_id: str | None = None,
 ) -> Path:
     has_student = bool(isinstance(student_id, str) and student_id.strip())
     has_experiment = bool(isinstance(experiment_name, str) and experiment_name.strip())
-    if has_student != has_experiment:
+    has_session = bool(isinstance(session_id, str) and session_id.strip())
+    if len({has_student, has_experiment, has_session}) != 1:
         raise StoragePathError(
-            "student_id and experiment_name must be provided together"
+            "student_id, experiment_name, and session_id must be provided together"
         )
     if not has_student:
         return data_dir / batch_id
+    return (
+        student_uvvis_directory(
+            data_dir,
+            student_id=str(student_id),
+            experiment_name=str(experiment_name),
+            session_id=str(session_id),
+        )
+        / ".batches"
+        / batch_id
+    )
+
+
+def student_uvvis_directory(
+    data_dir: Path,
+    *,
+    student_id: str,
+    experiment_name: str,
+    session_id: str,
+) -> Path:
     student_account = safe_storage_component(
         student_id,
         "student_id",
@@ -67,12 +94,16 @@ def student_batch_directory(
         experiment_name,
         "experiment_name",
     )
-    return data_dir / student_account / "uvvis" / experiment_directory / batch_id
+    session_directory = safe_storage_component(session_id, "session_id")
+    return (
+        data_dir / student_account / experiment_directory / session_directory / "uvvis"
+    )
 
 
 def existing_batch_directories(data_dir: Path, batch_id: str) -> list[Path]:
     candidates = [data_dir / batch_id]
     if data_dir.is_dir():
+        candidates.extend(data_dir.glob(f"*/*/*/uvvis/.batches/{batch_id}"))
         candidates.extend(data_dir.glob(f"*/uvvis/*/{batch_id}"))
     unique: dict[str, Path] = {}
     for candidate in candidates:

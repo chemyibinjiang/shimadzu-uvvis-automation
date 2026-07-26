@@ -24,10 +24,11 @@ Python <- .vphd OLE data <- LabSolutions UV-Vis
 | `start/stop/step` 兼容入口 | 已实现 | 旧入口仍只匹配已登记 profile；新 MCP 生成器处理可表示的 Spectrum 请求 |
 | Photometric 离散多波长 | 已实现并现场验证 | 单方法最多 10 点；更长列表自动分段、逐个读回并在测量后合并 |
 | 四模式 MCP 规划 | 已实现 | Spectrum、Photometric、Quantitation、Time Course 的请求校验、模板选择和命令计划 |
-| 多样品 Spectrum/Photometric MCP 执行 | 已实现 | 持久状态机依次校正基线、测量指定的下一个样品并归档数据 |
+| 多样品 Spectrum/Photometric/Time Course MCP 执行 | 已实现 | 持久状态机依次校正基线、测量指定的下一个样品并归档数据 |
 | 四模式基础方法模板 | 已创建并校验 | D 盘真实 LabSolutions 方法文件，配置登记 SHA-256 完整性校验 |
 | Photometric 执行 | 已实现，正在实机验收 | `300/310/311/320/321` 分段执行；直接解析 `.vphd`，生成合并 CSV、JSON、PNG 和最大吸收波长 |
-| Quantitation/Time Course 执行 | 尚未开放 | 需要结果结构和保存流程的现场验收 |
+| Quantitation 执行 | 尚未开放 | 需要结果结构和保存流程的现场验收 |
+| Time Course 实机验收 | 待接仪器 | 已实现 `400/410/411`、动态超时、CSV 解析与路径归档，仍需连接仪器完成端到端验收 |
 | USB、串口或底层仪器 API | 不提供 | 当前岛津集成边界是 LabSolutions 上层文本交换 |
 
 核心安全能力：
@@ -165,7 +166,7 @@ D:\UVVis-Automation\control
 D:\UVVis-Automation\methods
 D:\UVVis-Automation\methods\generated
 D:\UVVis-Automation\templates
-D:\UVVis-Automation\data
+D:\AI-Tutor-Data\data
 D:\UVVis-Automation\export
 D:\UVVis-Automation\logs
 ```
@@ -289,11 +290,11 @@ D:\UVVis-Automation\logs
 | `<日期>\..._cmd<N>_<request-id>.json` | 单条命令、参数、反馈、耗时和异常 |
 | `runs\<SampleID>.json` | 单次测量、数据路径、时间和导出 SHA-256 |
 | `series\<SeriesID>.json` | 序列计划、实际开始偏移、迟到量和各次结果 |
-| `D:\UVVis-Automation\data\<SampleID>.vspd` | LabSolutions 原始 Spectrum 数据 |
+| `D:\AI-Tutor-Data\data\<学生账号>\<实验名称>\<会话ID>\uvvis\<样品名称>\raw\<样品名称>.vspd` | LabSolutions 原始 Spectrum 数据 |
 | CSV/TXT/XLSX | LabSolutions 按预设格式自动导出的结果 |
-| `outputs/<batch>/<sample>/result.csv` | AI tutor 使用的标准波长/吸光度点表 |
-| `outputs/<batch>/<sample>/result.json` | 点表、最大吸收波长和来源文件 |
-| `outputs/<batch>/<sample>/result.png` | 合并后的光谱图 |
+| `...\uvvis\<样品名称>\<样品名称>.csv` | AI tutor 使用的标准波长/吸光度点表 |
+| `...\uvvis\<样品名称>\<样品名称>.json` | 点表、最大吸收波长和来源文件 |
+| `...\uvvis\<样品名称>\<样品名称>.png` | 合并后的光谱图 |
 
 Spectrum 批次完成 `Command=111` 后，程序优先直接读取 `.vspd` 的 X/Y 双精度数据流；只有文件结构
 无法识别时才等待 LabSolutions 自动导出 CSV。两种来源都必须与方法的波长范围、数据间隔和点数

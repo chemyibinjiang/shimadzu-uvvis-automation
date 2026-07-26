@@ -75,7 +75,7 @@ SHA-256：`CF713062807A56E4DDA7F3E8209828C375182774E27F826C614BF798ADDC04B4`
 | 1.1 | 自动控制通过上层系统与 LabSolutions 交换命令文件和反馈文件实现。 | 本项目只作为 LabSolutions 文本交换客户端，不直接控制 USB、串口或底层驱动。 |
 | 1.2 | 上层系统保存命令文件到命令接收文件夹；LabSolutions 读取后删除命令文件、执行命令、写反馈文件。 | 客户端先写临时文件，再原子替换为正式命令文件，并等待匹配反馈。 |
 | 1.3 | 一个命令文件只能记载一条命令；执行命令时无法接收下一条命令；反馈文件发出后才接收下一条。 | 客户端对高层流程加进程间锁，避免并发写入同一命令目录。 |
-| 1.3 | Spectrum 使用 `SPC_CMD.txt` 和 `SPC_RES.txt`；Quantitation 使用 `QUA_CMD.txt` 和 `QUA_RES.txt`；Photometric 使用 `PHO_CMD.txt` 和 `PHO_RES.txt`；Time Course 使用 `TMC_CMD.txt` 和 `TMC_RES.txt`。 | 四模式 MCP 请求和命令计划已实现；真实执行目前只开放 Spectrum。 |
+| 1.3 | Spectrum 使用 `SPC_CMD.txt` 和 `SPC_RES.txt`；Quantitation 使用 `QUA_CMD.txt` 和 `QUA_RES.txt`；Photometric 使用 `PHO_CMD.txt` 和 `PHO_RES.txt`；Time Course 使用 `TMC_CMD.txt` 和 `TMC_RES.txt`。 | 四模式 MCP 请求和命令计划已实现；Spectrum、Photometric 和具备精确核验方法的 Time Course 已接入批次执行，Quantitation 仍只规划。 |
 | 1.4-1.6 | 命令文件第一行是 `Command=<编号>`，后续行为参数；反馈文件包含 `Command`、`Return`、`Error`；命令和反馈文件使用 UTF-8。 | 文件编码固定为 UTF-8，但现场文本内容仍按 ASCII 保守执行。 |
 | 5.8 | `Command=21` 可按方法自动校正、范围基线校正或单波长调零；液体测量通常在空白样品（溶剂）状态下校正。 | 首次真实测量默认不自动校正，只有操作人员确认空白放置后才启用；不在上层代码中手工扣暗电流或空气能量。 |
 | 5.11.1 | `Command=100` 加载 Spectrum 参数文件；参数文件必须与登记机型匹配。 | 配置文件登记 `.vspm`，现场验收要求人工核对波长范围和扫描参数。 |

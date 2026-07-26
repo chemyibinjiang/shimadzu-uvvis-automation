@@ -122,7 +122,8 @@ AI tutor 收到 `400-700 nm，步长 10 nm` 时不必预先指定模式：
 `routing` 字段记录调用方请求的模式、最终选择的模式和选择依据。模式选择永远发生在方法生成、
 Automatic Control、基线校正和测量之前。
 `execution_readiness` 还包含 `mcp_execution_supported`；当前通过能力校验的 Spectrum 和
-Photometric 请求为 `true`。Quantitation 和 Time Course 仍不会仅因磁盘上存在方法而被标记为可执行。
+Photometric 请求为 `true`。Time Course 在精确目标方法已经由操作人员创建并核验时可执行，但不会
+自动修改模板生成方法；Quantitation 仍不会仅因磁盘上存在方法而被标记为可执行。
 目标方法不存在时返回：
 
 ```json
@@ -174,6 +175,9 @@ ID，不使用 Computer Use、截图坐标，也不修改 OLE 二进制字节。
   "student_id": "stu_20240001",
   "experiment_name": "银纳米粒子的制备与表征",
   "mode": "spectrum",
+  "student_id": "stu_20240001",
+  "experiment_name": "银纳米粒子的制备与表征",
+  "session_id": "session_001",
   "samples": [
     {"sample_name": "sample A", "sample_id": "sample_a"},
     {"sample_name": "sample B", "sample_id": "sample_b"}
@@ -187,8 +191,9 @@ ID，不使用 Computer Use、截图坐标，也不修改 OLE 二进制字节。
 ```
 
 `batch_id` 可以省略；工具会按北京时间生成 `uvvis_YYYYMMDD_HHMMSS`。返回的 `batch_id` 必须在
-`start_uvvis_batch` 及后续状态、基线和测量调用中原样复用。带学生和实验上下文时，数据目录为
-`data/<学生账号>/uvvis/<实验名称>/<batch_id>/`。
+`start_uvvis_batch` 及后续状态、基线和测量调用中原样复用。生产调用必须同时提供学生、实验和会话
+上下文；最终数据目录为
+`data/<学生账号>/<实验名称>/<会话ID>/uvvis/<样品名称>/`。
 
 规划结果把输入样品依次转换为 `001_sample_a`、`002_sample_b`。每个样品都包含状态为
 `required` 的 `replace_sample_and_confirm` 门禁；后续执行器只有收到该样品的现场确认后，才可发送
@@ -231,6 +236,7 @@ ID，不使用 Computer Use、截图坐标，也不修改 OLE 二进制字节。
   "batch_id": "uvvis_20260724_153012",
   "student_id": "stu_20240001",
   "experiment_name": "银纳米粒子的制备与表征",
+  "session_id": "session_001",
   "samples": [
     {"sample_name": "sample A", "sample_id": "sample_a"},
     {"sample_name": "sample B", "sample_id": "sample_b"}
@@ -359,7 +365,7 @@ configure_command_directory = true
 ### 持久化状态
 
 ```text
-D:\UVVis-Automation\data\<batch_id>\batch-manifest.json
+D:\AI-Tutor-Data\data\<学生账号>\<实验名称>\<会话ID>\uvvis\.batches\<batch_id>\batch-manifest.json
 ```
 
 命令执行前先写入过渡状态，成功反馈和文件归档后再推进。超时、命令失败、原始数据缺失或导出
@@ -370,4 +376,4 @@ D:\UVVis-Automation\data\<batch_id>\batch-manifest.json
 MCP 是 AI tutor 与本地控制程序之间的结构化接口，不是 USB 驱动。执行工具只通过 LabSolutions
 自动控制目录发送受审计命令，并且必须在方法存在、路径就绪、状态匹配、样品信息完整和操作员
 授权后才能测量。批次启动、基线和每个样品动作还必须通过运行时 READY 门禁。当前执行状态机
-开放 Spectrum 和 Photometric；Quantitation 与 Time Course 仍为只读规划。
+开放 Spectrum、Photometric 和已具备精确人工核验方法的 Time Course；Quantitation 仍为只读规划。

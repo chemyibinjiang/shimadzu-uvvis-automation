@@ -101,9 +101,7 @@ class SpectrumBatchController:
         settings: ControlSettings,
         *,
         client_factory: Callable[[], LabSolutionsClient] | None = None,
-        runtime_manager_factory: (
-            Callable[[], LabSolutionsRuntimeManager] | None
-        ) = None,
+        runtime_manager_factory: Callable[[], LabSolutionsRuntimeManager] | None = None,
     ) -> None:
         if settings.data_dir is None:
             raise SpectrumBatchError("spectrum.data_dir must be configured")
@@ -351,6 +349,7 @@ class SpectrumBatchController:
                 batch_id,
                 student_id=str(plan.get("student_id") or "") or None,
                 experiment_name=str(plan.get("experiment_name") or "") or None,
+                session_id=str(plan.get("session_id") or "") or None,
             ).resolve()
         except ValueError as exc:
             raise SpectrumBatchError(str(exc)) from exc
@@ -418,10 +417,14 @@ class SpectrumBatchController:
         try:
             with self._lock():
                 self._ensure_no_active_batch()
-                batch_id, mode, methods, batch_directory = self._validate_start_plan(plan)
+                batch_id, mode, methods, batch_directory = self._validate_start_plan(
+                    plan
+                )
                 runtime_manager = self._runtime_manager(mode)
                 runtime_ready = runtime_manager.ensure_ready(allow_reconfigure=True)
-                existing_directories = existing_batch_directories(self.data_dir, batch_id)
+                existing_directories = existing_batch_directories(
+                    self.data_dir, batch_id
+                )
                 if existing_directories:
                     raise SpectrumBatchError(
                         f"batch directory already exists: {existing_directories[0]}"
@@ -454,8 +457,19 @@ class SpectrumBatchController:
                 samples: list[dict[str, Any]] = []
                 for planned_sample in plan["samples"]:
                     paths = dict(planned_sample["paths"])
-                    for key in ("raw_directory", "export_directory", "plot_directory"):
-                        Path(str(paths[key])).mkdir(parents=True, exist_ok=False)
+                    sample_directory = Path(str(paths["sample_directory"]))
+                    sample_directory.mkdir(parents=True, exist_ok=False)
+                    child_directories = {
+                        Path(str(paths[key]))
+                        for key in (
+                            "raw_directory",
+                            "export_directory",
+                            "plot_directory",
+                        )
+                        if Path(str(paths[key])) != sample_directory
+                    }
+                    for directory in child_directories:
+                        directory.mkdir(parents=True, exist_ok=True)
                     samples.append(
                         {
                             "sequence_number": planned_sample["sequence_number"],
@@ -477,6 +491,9 @@ class SpectrumBatchController:
                     "student_account": str(plan.get("student_account") or ""),
                     "experiment_name": str(plan.get("experiment_name") or ""),
                     "experiment_directory": str(plan.get("experiment_directory") or ""),
+                    "session_id": str(plan.get("session_id") or ""),
+                    "session_directory": str(plan.get("session_directory") or ""),
+                    "results_directory": str(plan.get("results_directory") or ""),
                     "mode": mode,
                     "state": "STARTING",
                     "created_at_utc": now,
@@ -753,12 +770,19 @@ class SpectrumBatchController:
         destination = destination_directory / source.name
         if destination.exists():
             raise SpectrumBatchError(f"archived export already exists: {destination}")
-        temporary = destination.with_name(f".{destination.name}.{uuid.uuid4().hex}.tmp")
+        destination_directory.mkdir(parents=True, exist_ok=True)
         try:
-            shutil.copy2(source, temporary)
-            os.replace(temporary, destination)
-        finally:
-            temporary.unlink(missing_ok=True)
+            os.replace(source, destination)
+        except OSError:
+            temporary = destination.with_name(
+                f".{destination.name}.{uuid.uuid4().hex}.tmp"
+            )
+            try:
+                shutil.copy2(source, temporary)
+                os.replace(temporary, destination)
+                source.unlink()
+            finally:
+                temporary.unlink(missing_ok=True)
         return destination
 
     def _measure_spectrum_sample(
@@ -786,9 +810,7 @@ class SpectrumBatchController:
         self._append_feedback(manifest, feedback, phase=f"sample:{sample_id}")
         self._wait_for_stable_file(raw_path)
         request = manifest["request"]
-        normalized = (
-            Path(str(sample["paths"]["export_directory"])) / f"{sample_id}.csv"
-        )
+        normalized = Path(str(sample["paths"]["export_directory"])) / f"{sample_id}.csv"
         try:
             normalize_spectrum_data_file(
                 data_file=raw_path,
@@ -847,7 +869,9 @@ class SpectrumBatchController:
             record.get("segment_index") != index
             for index, record in enumerate(records, start=1)
         ):
-            raise SpectrumBatchError("completed Photometric segment records are invalid")
+            raise SpectrumBatchError(
+                "completed Photometric segment records are invalid"
+            )
         for index, (segment, method) in enumerate(
             zip(segments, methods, strict=True), start=1
         ):
@@ -1035,8 +1059,7 @@ class SpectrumBatchController:
         if mode == "photometric":
             sample["result"] = build_photometric_result(
                 export_files=[
-                    Path(str(segment["export"]["path"]))
-                    for segment in segment_records
+                    Path(str(segment["export"]["path"])) for segment in segment_records
                 ],
                 expected_segments=[
                     list(segment["wavelengths_nm"]) for segment in segment_records
@@ -1300,9 +1323,8 @@ class SpectrumBatchController:
                     not isinstance(last_error, Mapping)
                     or last_error.get("operation") != expected_operation
                     or last_error.get("type") != "LabSolutionsTimeoutError"
-                    or "waiting for a stable export" not in str(
-                        last_error.get("message", "")
-                    )
+                    or "waiting for a stable export"
+                    not in str(last_error.get("message", ""))
                 ):
                     raise SpectrumBatchError(
                         "result recovery is allowed only after a confirmed Spectrum "
@@ -1323,8 +1345,7 @@ class SpectrumBatchController:
                 raw_path = Path(str(sample["paths"]["raw_data_file"]))
                 self._wait_for_stable_file(raw_path)
                 normalized = (
-                    Path(str(sample["paths"]["export_directory"]))
-                    / f"{sample_id}.csv"
+                    Path(str(sample["paths"]["export_directory"])) / f"{sample_id}.csv"
                 )
                 request = manifest["request"]
                 try:
@@ -1446,12 +1467,12 @@ class SpectrumBatchController:
             next_action = "wait_for_current_operation"
         return {
             "batch_id": manifest.get("batch_id"),
-            "batch_directory": str(
-                self._manifest_path_for_record(manifest).parent
-            ),
+            "batch_directory": str(self._manifest_path_for_record(manifest).parent),
             "student_id": manifest.get("student_id"),
             "student_account": manifest.get("student_account"),
             "experiment_name": manifest.get("experiment_name"),
+            "session_id": manifest.get("session_id"),
+            "results_directory": manifest.get("results_directory"),
             "mode": manifest.get("mode"),
             "state": state,
             "next_action": next_action,

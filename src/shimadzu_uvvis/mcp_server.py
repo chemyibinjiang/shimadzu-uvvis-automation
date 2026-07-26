@@ -31,6 +31,7 @@ from .storage_paths import (
     existing_batch_directories,
     safe_storage_component,
     student_batch_directory,
+    student_uvvis_directory,
 )
 
 
@@ -427,6 +428,7 @@ def build_uvvis_sample_batch_plan(
     duration_seconds: float | None = None,
     student_id: str | None = None,
     experiment_name: str | None = None,
+    session_id: str | None = None,
 ) -> dict[str, Any]:
     """Plan sequential measurements that require manual sample replacement."""
 
@@ -481,6 +483,17 @@ def build_uvvis_sample_batch_plan(
         normalized_batch_id,
         student_id=student_id,
         experiment_name=experiment_name,
+        session_id=session_id,
+    )
+    results_directory = (
+        student_uvvis_directory(
+            settings.data_dir,
+            student_id=str(student_id),
+            experiment_name=str(experiment_name),
+            session_id=str(session_id),
+        )
+        if student_id and experiment_name and session_id
+        else batch_directory
     )
     student_account = (
         safe_storage_component(student_id, "student_id", strip_student_prefix=True)
@@ -491,6 +504,9 @@ def build_uvvis_sample_batch_plan(
         safe_storage_component(experiment_name, "experiment_name")
         if experiment_name
         else ""
+    )
+    session_directory = (
+        safe_storage_component(session_id, "session_id") if session_id else ""
     )
     extension = DATA_FILE_EXTENSIONS[selected_mode]
     measurement_command = {
@@ -539,14 +555,35 @@ def build_uvvis_sample_batch_plan(
         str(path)
         for path in existing_batch_directories(settings.data_dir, normalized_batch_id)
     ]
+    sample_directories: set[Path] = set()
+    human_readable_results = bool(student_account and session_directory)
     for sequence_number, (sample_name, source_sample_id) in enumerate(
         normalized_samples, start=1
     ):
         run_sample_id = f"{sequence_number:03d}_{source_sample_id}"
-        sample_directory = batch_directory / run_sample_id
+        sample_file_stem = (
+            safe_storage_component(sample_name, "sample_name")
+            if human_readable_results
+            else run_sample_id
+        )
+        sample_directory = (
+            results_directory / sample_file_stem
+            if human_readable_results
+            else batch_directory / run_sample_id
+        )
+        normalized_sample_directory = sample_directory.resolve()
+        if normalized_sample_directory in sample_directories:
+            raise MeasurementPlanError(
+                "sample names must produce unique result directory names"
+            )
+        sample_directories.add(normalized_sample_directory)
         raw_directory = sample_directory / "raw"
-        export_directory = sample_directory / "export"
-        plot_directory = sample_directory / "plot"
+        export_directory = (
+            raw_directory if human_readable_results else sample_directory / "export"
+        )
+        plot_directory = (
+            sample_directory if human_readable_results else sample_directory / "plot"
+        )
         method_segments = measurement["method_generation"]["segments"]
         if selected_mode == "photometric":
             sample_segments = [
@@ -561,7 +598,7 @@ def build_uvvis_sample_batch_plan(
                     "raw_data_file": str(
                         raw_directory
                         / (
-                            f"{run_sample_id}_s{int(segment['segment_index']):02d}"
+                            f"{sample_file_stem}_s{int(segment['segment_index']):02d}"
                             f"{extension}"
                         )
                     ),
@@ -576,11 +613,17 @@ def build_uvvis_sample_batch_plan(
                     "method_file": method_segments[0]["target_method_file"],
                     "wavelengths_nm": None,
                     "sample_id": run_sample_id,
-                    "raw_data_file": str(raw_directory / f"{run_sample_id}{extension}"),
+                    "raw_data_file": str(
+                        raw_directory / f"{sample_file_stem}{extension}"
+                    ),
                 }
             ]
         raw_data_file = Path(sample_segments[0]["raw_data_file"])
-        manifest_file = sample_directory / "manifest.json"
+        manifest_file = (
+            raw_directory / "measurement-manifest.json"
+            if human_readable_results
+            else sample_directory / "manifest.json"
+        )
         if sample_directory.exists():
             path_conflicts.append(str(sample_directory))
         sample_plans.append(
@@ -595,7 +638,7 @@ def build_uvvis_sample_batch_plan(
                     "status": "required",
                     "required_before_command": measurement_command,
                     "instructions": (
-                        f"Place sample {run_sample_id} in the sample position, keep "
+                        f"Place sample {sample_name} ({run_sample_id}) in the sample position, keep "
                         f"reference {normalized_reference} in the reference position, "
                         "then confirm identity and placement."
                     ),
@@ -609,9 +652,24 @@ def build_uvvis_sample_batch_plan(
                     ],
                     "export_directory": str(export_directory),
                     "plot_directory": str(plot_directory),
-                    "plot_file": str(plot_directory / "result.png"),
-                    "merged_csv_file": str(export_directory / "result.csv"),
-                    "result_json_file": str(export_directory / "result.json"),
+                    "plot_file": str(
+                        plot_directory
+                        / (
+                            f"{sample_file_stem}.png"
+                            if human_readable_results
+                            else "result.png"
+                        )
+                    ),
+                    "merged_csv_file": str(
+                        sample_directory / f"{sample_file_stem}.csv"
+                        if human_readable_results
+                        else export_directory / "result.csv"
+                    ),
+                    "result_json_file": str(
+                        sample_directory / f"{sample_file_stem}.json"
+                        if human_readable_results
+                        else export_directory / "result.json"
+                    ),
                     "manifest_file": str(manifest_file),
                 },
                 "segments": sample_segments,
@@ -643,6 +701,8 @@ def build_uvvis_sample_batch_plan(
         "student_account": student_account,
         "experiment_name": str(experiment_name or "").strip(),
         "experiment_directory": experiment_directory,
+        "session_id": str(session_id or "").strip(),
+        "session_directory": session_directory,
         "mode": selected_mode,
         "routing": measurement["routing"],
         "sample_count": len(sample_plans),
@@ -653,8 +713,9 @@ def build_uvvis_sample_batch_plan(
         "batch_preparation": baseline_preparation,
         "measurement_plan": measurement,
         "batch_directory": str(batch_directory),
+        "results_directory": str(results_directory),
         "storage_layout": (
-            "data/<student_account>/uvvis/<experiment_name>/<batch_id>"
+            "data/<student_account>/<experiment_name>/<session_id>/uvvis/<sample_name>"
             if student_account
             else "data/<batch_id>"
         ),
@@ -879,7 +940,7 @@ def create_mcp_server(
         description=(
             "Select a compatible LabSolutions mode, then plan multiple samples for "
             "an instrument with one sample and one reference position. Assign unique "
-            "sequence-prefixed data folders and require sample-replacement "
+            "human-readable sample folders inside the student experiment session and require sample-replacement "
             "confirmation before every measurement. This tool is read-only."
         ),
         annotations=ToolAnnotations(
@@ -895,6 +956,7 @@ def create_mcp_server(
         reference_name: str,
         student_id: str,
         experiment_name: str,
+        session_id: str,
         mode: PlanningMode = "auto",
         measurement_purpose: MeasurementPurpose = "measurement",
         baseline_policy: BaselinePolicy = "new",
@@ -933,6 +995,7 @@ def create_mcp_server(
             duration_seconds=duration_seconds,
             student_id=student_id,
             experiment_name=experiment_name,
+            session_id=session_id,
         )
 
     @server.tool(
@@ -993,6 +1056,7 @@ def create_mcp_server(
         execution_confirmed: bool,
         student_id: str,
         experiment_name: str,
+        session_id: str,
         mode: PlanningMode = "auto",
         baseline_policy: BaselinePolicy = "new",
         signal_type: str = "absorbance",
@@ -1028,6 +1092,7 @@ def create_mcp_server(
             duration_seconds=duration_seconds,
             student_id=student_id,
             experiment_name=experiment_name,
+            session_id=session_id,
         )
         return batch_controller(settings).start(
             plan,

@@ -162,12 +162,18 @@ scan_speed_nm_per_min = 600.0
                 ["new", "reuse_valid"],
             )
             self.assertTrue(
-                {"samples", "reference_name", "student_id", "experiment_name"}
+                {
+                    "samples",
+                    "reference_name",
+                    "student_id",
+                    "experiment_name",
+                    "session_id",
+                }
                 <= set(batch_tool.inputSchema["required"])
             )
             start_tool = tools[4]
             self.assertTrue(
-                {"student_id", "experiment_name"}
+                {"student_id", "experiment_name", "session_id"}
                 <= set(start_tool.inputSchema["required"])
             )
             scan_tool = tools[3]
@@ -227,9 +233,7 @@ scan_speed_nm_per_min = 600.0
             calls: list[str] = []
 
             class StubController:
-                def recover_spectrum_result(
-                    self, batch_id: str
-                ) -> dict[str, object]:
+                def recover_spectrum_result(self, batch_id: str) -> dict[str, object]:
                     calls.append(batch_id)
                     return {
                         "batch_id": batch_id,
@@ -428,7 +432,9 @@ scan_speed_nm_per_min = 600.0
             self.assertTrue(second_paths["raw_data_file"].endswith("002_sample_b.vspd"))
             self.assertFalse(plan["safety"]["unattended_execution_supported"])
 
-    def test_sample_batch_uses_student_experiment_timestamp_directory(self) -> None:
+    def test_sample_batch_uses_student_experiment_session_sample_directory(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             config, _ = self._fixture(root)
@@ -444,27 +450,38 @@ scan_speed_nm_per_min = 600.0
                 step_nm=1,
                 student_id="stu_20240001",
                 experiment_name="银纳米粒子的制备与表征",
+                session_id="session_001",
             )
 
-            expected = (
+            results_directory = (
                 root
                 / "data"
                 / "20240001"
-                / "uvvis"
                 / "银纳米粒子的制备与表征"
-                / "uvvis_20260724_153012"
+                / "session_001"
+                / "uvvis"
             )
-            self.assertEqual(Path(plan["batch_directory"]), expected)
+            expected_batch = results_directory / ".batches" / "uvvis_20260724_153012"
+            self.assertEqual(Path(plan["batch_directory"]), expected_batch)
+            self.assertEqual(Path(plan["results_directory"]), results_directory)
             self.assertEqual(plan["student_account"], "20240001")
             self.assertEqual(plan["experiment_name"], "银纳米粒子的制备与表征")
+            self.assertEqual(plan["session_id"], "session_001")
             self.assertEqual(
                 plan["storage_layout"],
-                "data/<student_account>/uvvis/<experiment_name>/<batch_id>",
+                "data/<student_account>/<experiment_name>/<session_id>/uvvis/<sample_name>",
+            )
+            paths = plan["samples"][0]["paths"]
+            sample_directory = results_directory / "1号样品"
+            self.assertEqual(Path(paths["sample_directory"]), sample_directory)
+            self.assertEqual(
+                Path(paths["merged_csv_file"]), sample_directory / "1号样品.csv"
             )
             self.assertEqual(
-                Path(plan["samples"][0]["paths"]["sample_directory"]).parent,
-                expected,
+                Path(paths["result_json_file"]), sample_directory / "1号样品.json"
             )
+            self.assertEqual(Path(paths["plot_file"]), sample_directory / "1号样品.png")
+            self.assertEqual(Path(paths["raw_directory"]), sample_directory / "raw")
 
     def test_mcp_sample_batch_generates_beijing_timestamp_id(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -486,14 +503,15 @@ scan_speed_nm_per_min = 600.0
                         "step_nm": 1,
                         "student_id": "stu_20240001",
                         "experiment_name": "银纳米粒子的制备与表征",
+                        "session_id": "session_001",
                     },
                 )
             )
 
             self.assertRegex(plan["batch_id"], r"^uvvis_\d{8}_\d{6}$")
             self.assertEqual(
-                Path(plan["batch_directory"]).parts[-4:-1],
-                ("20240001", "uvvis", "银纳米粒子的制备与表征"),
+                Path(plan["results_directory"]).parts[-5:],
+                ("data", "20240001", "银纳米粒子的制备与表征", "session_001", "uvvis"),
             )
             self.assertEqual(Path(plan["batch_directory"]).name, plan["batch_id"])
 
@@ -628,7 +646,16 @@ scan_speed_nm_per_min = 600.0
             config, _ = self._fixture(root)
             settings = load_settings(config)
             batch_id = "uvvis_20260724_153012"
-            existing = root / "data" / "20240001" / "uvvis" / "实验甲" / batch_id
+            existing = (
+                root
+                / "data"
+                / "20240001"
+                / "实验甲"
+                / "session_a"
+                / "uvvis"
+                / ".batches"
+                / batch_id
+            )
             existing.mkdir(parents=True)
 
             plan = build_uvvis_sample_batch_plan(
@@ -642,6 +669,7 @@ scan_speed_nm_per_min = 600.0
                 step_nm=1,
                 student_id="stu_20240002",
                 experiment_name="实验乙",
+                session_id="session_b",
             )
 
             self.assertEqual(plan["status"], "path_conflict")

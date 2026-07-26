@@ -130,7 +130,8 @@ Spectrum 吸光度动态方法生成器已经实现。它通过已验证的 Win3
 Spectrum 数据间隔仅支持 `0.01/0.05/0.1/0.2/0.5/1/2/5 nm`。显式 Spectrum 的 10 nm 请求会
 被拒绝；自动模式会在启动 LabSolutions 前将其路由为 Photometric 精确离散点。
 
-Photometric 动态生成器已实现并完成现场方法生成验收。Quantitation 和 Time Course 仍只做规划
+Photometric 动态生成器已实现并完成现场方法生成验收。Time Course 可执行人工创建并核验的精确
+目标方法，但尚不自动修改模板生成 `.vtmm`；Quantitation 仍只做规划
 和模板选择，直到各自参数编辑器、保存和读回流程完成现场验证。
 
 ### Photometric 现场生成记录
