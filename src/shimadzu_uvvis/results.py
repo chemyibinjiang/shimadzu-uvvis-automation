@@ -28,6 +28,10 @@ class SpectrumResultError(RuntimeError):
     """Raised when an exported Spectrum cannot be verified against its method."""
 
 
+class TimeCourseResultError(RuntimeError):
+    """Raised when an exported Time Course cannot be validated."""
+
+
 @dataclass(frozen=True, slots=True)
 class AbsorbancePoint:
     wavelength_nm: float
@@ -36,6 +40,19 @@ class AbsorbancePoint:
     def as_dict(self) -> dict[str, float]:
         return {
             "wavelength_nm": self.wavelength_nm,
+            "absorbance": self.absorbance,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class TimeCoursePoint:
+    time_seconds: float
+    absorbance: float
+
+    def as_dict(self) -> dict[str, float]:
+        return {
+            "time_seconds": self.time_seconds,
+            "time_min": self.time_seconds / 60.0,
             "absorbance": self.absorbance,
         }
 
@@ -113,6 +130,122 @@ def _is_absorbance_header(value: str) -> bool:
     folded = value.casefold().strip()
     compact = re.sub(r"[^a-z0-9]+", "", folded)
     return "abs" in folded or "吸光" in value or compact == "a"
+
+
+def _time_header_unit(value: str) -> str | None:
+    folded = value.casefold().strip()
+    compact = re.sub(r"[^a-z0-9]+", "", folded)
+    if "time" not in folded and "时间" not in value:
+        return None
+    if any(token in folded for token in ("min", "minute", "分钟")):
+        return "minutes"
+    if any(token in folded for token in ("sec", "second", "秒")):
+        return "seconds"
+    if compact.endswith("min"):
+        return "minutes"
+    return "seconds"
+
+
+def _time_course_grid(interval_seconds: float, duration_seconds: float) -> list[float]:
+    values = (interval_seconds, duration_seconds)
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or not math.isfinite(value)
+        or value <= 0
+        for value in values
+    ):
+        raise TimeCourseResultError(
+            "Time Course interval and duration must be finite positive numbers"
+        )
+    interval = float(interval_seconds)
+    duration = float(duration_seconds)
+    quotient = duration / interval
+    if not math.isclose(quotient, round(quotient), abs_tol=1e-9):
+        raise TimeCourseResultError(
+            "Time Course duration must be evenly divisible by interval_seconds"
+        )
+    return [round(index * interval, 12) for index in range(round(quotient) + 1)]
+
+
+def _validated_time_course_points(
+    values: Sequence[tuple[float, float]],
+    expected: Sequence[float],
+) -> list[TimeCoursePoint]:
+    if not values:
+        raise TimeCourseResultError("Time Course export contains no numeric points")
+    interval = expected[1] - expected[0] if len(expected) > 1 else 1.0
+    tolerance = max(1e-6, abs(interval) * 1e-4)
+    by_index: dict[int, float] = {}
+    for time_seconds, absorbance in values:
+        index = round(time_seconds / interval)
+        if index < 0 or index >= len(expected) or not math.isclose(
+            time_seconds, expected[index], abs_tol=tolerance
+        ):
+            raise TimeCourseResultError(
+                "Time Course export contains a time outside the requested grid: "
+                f"{time_seconds:g} s"
+            )
+        if index in by_index:
+            raise TimeCourseResultError(
+                f"Time Course export contains duplicate time {expected[index]:g} s"
+            )
+        by_index[index] = absorbance
+    if len(by_index) != len(expected):
+        missing = [value for index, value in enumerate(expected) if index not in by_index]
+        preview = ", ".join(f"{value:g}" for value in missing[:10])
+        suffix = "..." if len(missing) > 10 else ""
+        raise TimeCourseResultError(
+            f"Time Course export is missing {len(missing)} requested times: "
+            f"{preview}{suffix}"
+        )
+    return [
+        TimeCoursePoint(time_seconds, by_index[index])
+        for index, time_seconds in enumerate(expected)
+    ]
+
+
+def parse_time_course_export(
+    path: Path,
+    *,
+    interval_seconds: float,
+    duration_seconds: float,
+) -> list[TimeCoursePoint]:
+    """Parse a LabSolutions Time Course CSV into the requested time grid."""
+
+    expected = _time_course_grid(interval_seconds, duration_seconds)
+    for rows in _row_candidates(path):
+        for header_index, header in enumerate(rows):
+            time_columns = [
+                (index, unit)
+                for index, value in enumerate(header)
+                if (unit := _time_header_unit(value)) is not None
+            ]
+            absorbance_columns = [
+                index for index, value in enumerate(header) if _is_absorbance_header(value)
+            ]
+            for time_index, unit in time_columns:
+                for absorbance_index in absorbance_columns:
+                    if time_index == absorbance_index:
+                        continue
+                    values: list[tuple[float, float]] = []
+                    for row in rows[header_index + 1 :]:
+                        if max(time_index, absorbance_index) >= len(row):
+                            continue
+                        time_value = _number(row[time_index])
+                        absorbance = _number(row[absorbance_index])
+                        if time_value is None or absorbance is None:
+                            continue
+                        time_seconds = time_value * 60.0 if unit == "minutes" else time_value
+                        values.append((time_seconds, absorbance))
+                    if values:
+                        try:
+                            return _validated_time_course_points(values, expected)
+                        except TimeCourseResultError:
+                            pass
+    raise TimeCourseResultError(
+        f"cannot find a complete Time Course time/absorbance table in {path}"
+    )
 
 
 def _spectrum_grid(
@@ -533,6 +666,26 @@ def _write_csv(path: Path, points: Sequence[AbsorbancePoint]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def _write_time_course_csv(path: Path, points: Sequence[TimeCoursePoint]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    try:
+        with temporary.open("w", encoding="utf-8", newline="") as handle:
+            writer = csv.writer(handle)
+            writer.writerow(["time_seconds", "time_min", "absorbance"])
+            for point in points:
+                writer.writerow(
+                    [
+                        f"{point.time_seconds:g}",
+                        f"{point.time_seconds / 60.0:g}",
+                        f"{point.absorbance:.12g}",
+                    ]
+                )
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
 def normalize_photometric_data_file(
     *,
     data_file: Path,
@@ -668,6 +821,16 @@ def write_spectrum_png(path: Path, points: Sequence[AbsorbancePoint]) -> None:
         temporary.unlink(missing_ok=True)
 
 
+def write_time_course_png(path: Path, points: Sequence[TimeCoursePoint]) -> None:
+    """Render a Time Course line plot with time in minutes on the x-axis."""
+
+    spectrum_points = [
+        AbsorbancePoint(point.time_seconds / 60.0, point.absorbance)
+        for point in points
+    ]
+    write_spectrum_png(path, spectrum_points)
+
+
 def _build_result_bundle(
     *,
     mode: str,
@@ -695,6 +858,7 @@ def _build_result_bundle(
         "points": [point.as_dict() for point in points],
         "source_exports": [str(path) for path in source_exports],
         "csv_file": str(csv_file),
+        "json_file": str(json_file),
         "png_file": str(png_file),
     }
     if request is not None:
@@ -801,3 +965,69 @@ def build_photometric_result(
         sample_id=sample_id,
         publish_root=publish_root,
     )
+
+
+def build_time_course_result(
+    *,
+    export_file: Path,
+    wavelength_nm: float,
+    interval_seconds: float,
+    duration_seconds: float,
+    csv_file: Path,
+    json_file: Path,
+    png_file: Path,
+    batch_id: str,
+    sample_id: str,
+    publish_root: Path | None,
+) -> dict[str, object]:
+    """Verify a Time Course export and create an AI-facing kinetics bundle."""
+
+    points = parse_time_course_export(
+        export_file,
+        interval_seconds=interval_seconds,
+        duration_seconds=duration_seconds,
+    )
+    _write_time_course_csv(csv_file, points)
+    write_time_course_png(png_file, points)
+    record_rows = [point.as_dict() for point in points]
+    payload: dict[str, object] = {
+        "schema_version": 1,
+        "mode": "time_course",
+        "batch_id": batch_id,
+        "sample_id": sample_id,
+        "point_count": len(points),
+        "request": {
+            "wavelength_nm": float(wavelength_nm),
+            "interval_seconds": float(interval_seconds),
+            "duration_seconds": float(duration_seconds),
+        },
+        "points": record_rows,
+        "record_rows": record_rows,
+        "source_exports": [str(export_file)],
+        "csv_file": str(csv_file),
+        "json_file": str(json_file),
+        "png_file": str(png_file),
+    }
+    write_json_atomic(json_file, payload)
+
+    published: dict[str, str] | None = None
+    if publish_root is not None:
+        destination = publish_root / batch_id / sample_id
+        destination.mkdir(parents=True, exist_ok=True)
+        published = {}
+        for name, source in (
+            ("result.csv", csv_file),
+            ("result.json", json_file),
+            ("result.png", png_file),
+        ):
+            target = destination / name
+            temporary = target.with_name(f".{name}.{uuid.uuid4().hex}.tmp")
+            try:
+                shutil.copy2(source, temporary)
+                os.replace(temporary, target)
+            finally:
+                temporary.unlink(missing_ok=True)
+            published[name] = str(target)
+    payload["published"] = published
+    write_json_atomic(json_file, payload)
+    return payload

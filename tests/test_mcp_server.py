@@ -161,6 +161,15 @@ scan_speed_nm_per_min = 600.0
                 batch_tool.inputSchema["properties"]["baseline_policy"]["enum"],
                 ["new", "reuse_valid"],
             )
+            self.assertTrue(
+                {"samples", "reference_name", "student_id", "experiment_name"}
+                <= set(batch_tool.inputSchema["required"])
+            )
+            start_tool = tools[4]
+            self.assertTrue(
+                {"student_id", "experiment_name"}
+                <= set(start_tool.inputSchema["required"])
+            )
             scan_tool = tools[3]
             direction_schema = scan_tool.inputSchema["properties"]["direction"]
             self.assertIn(
@@ -419,6 +428,75 @@ scan_speed_nm_per_min = 600.0
             self.assertTrue(second_paths["raw_data_file"].endswith("002_sample_b.vspd"))
             self.assertFalse(plan["safety"]["unattended_execution_supported"])
 
+    def test_sample_batch_uses_student_experiment_timestamp_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config, _ = self._fixture(root)
+
+            plan = build_uvvis_sample_batch_plan(
+                load_settings(config),
+                batch_id="uvvis_20260724_153012",
+                mode="spectrum",
+                samples=[{"sample_name": "1号样品", "sample_id": "sample_01"}],
+                reference_name="blank",
+                start_nm=400,
+                stop_nm=700,
+                step_nm=1,
+                student_id="stu_20240001",
+                experiment_name="银纳米粒子的制备与表征",
+            )
+
+            expected = (
+                root
+                / "data"
+                / "20240001"
+                / "uvvis"
+                / "银纳米粒子的制备与表征"
+                / "uvvis_20260724_153012"
+            )
+            self.assertEqual(Path(plan["batch_directory"]), expected)
+            self.assertEqual(plan["student_account"], "20240001")
+            self.assertEqual(plan["experiment_name"], "银纳米粒子的制备与表征")
+            self.assertEqual(
+                plan["storage_layout"],
+                "data/<student_account>/uvvis/<experiment_name>/<batch_id>",
+            )
+            self.assertEqual(
+                Path(plan["samples"][0]["paths"]["sample_directory"]).parent,
+                expected,
+            )
+
+    def test_mcp_sample_batch_generates_beijing_timestamp_id(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config, _ = self._fixture(root)
+            server = create_mcp_server(config)
+
+            _, plan = asyncio.run(
+                server.call_tool(
+                    "plan_uvvis_sample_batch",
+                    {
+                        "samples": [
+                            {"sample_name": "1号样品", "sample_id": "sample_01"}
+                        ],
+                        "reference_name": "blank",
+                        "mode": "spectrum",
+                        "start_nm": 400,
+                        "stop_nm": 700,
+                        "step_nm": 1,
+                        "student_id": "stu_20240001",
+                        "experiment_name": "银纳米粒子的制备与表征",
+                    },
+                )
+            )
+
+            self.assertRegex(plan["batch_id"], r"^uvvis_\d{8}_\d{6}$")
+            self.assertEqual(
+                Path(plan["batch_directory"]).parts[-4:-1],
+                ("20240001", "uvvis", "银纳米粒子的制备与表征"),
+            )
+            self.assertEqual(Path(plan["batch_directory"]).name, plan["batch_id"])
+
     def test_sample_batch_reuses_valid_baseline_without_operator_gate(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -544,6 +622,31 @@ scan_speed_nm_per_min = 600.0
                 str(existing_batch), plan["execution_readiness"]["path_conflicts"]
             )
 
+    def test_sample_batch_id_must_be_unique_across_student_directories(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config, _ = self._fixture(root)
+            settings = load_settings(config)
+            batch_id = "uvvis_20260724_153012"
+            existing = root / "data" / "20240001" / "uvvis" / "实验甲" / batch_id
+            existing.mkdir(parents=True)
+
+            plan = build_uvvis_sample_batch_plan(
+                settings,
+                batch_id=batch_id,
+                mode="spectrum",
+                samples=[{"sample_name": "one", "sample_id": "one"}],
+                reference_name="blank",
+                start_nm=400,
+                stop_nm=700,
+                step_nm=1,
+                student_id="stu_20240002",
+                experiment_name="实验乙",
+            )
+
+            self.assertEqual(plan["status"], "path_conflict")
+            self.assertIn(str(existing), plan["execution_readiness"]["path_conflicts"])
+
     def test_all_measurement_modes_return_official_command_sequences(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
@@ -596,7 +699,7 @@ scan_speed_nm_per_min = 600.0
                         command_numbers,
                     )
 
-    def test_existing_generated_method_makes_path_checks_ready(self) -> None:
+    def test_existing_verified_time_course_method_makes_execution_ready(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             config, _ = self._fixture(root)
@@ -613,12 +716,9 @@ scan_speed_nm_per_min = 600.0
                 duration_seconds=600,
             )
 
-            self.assertEqual(plan["status"], "execution_not_supported")
-            self.assertFalse(plan["execution_readiness"]["ready"])
-            self.assertIn(
-                "mcp_execution_supported",
-                plan["execution_readiness"]["blocking_reasons"],
-            )
+            self.assertEqual(plan["status"], "planned")
+            self.assertTrue(plan["execution_readiness"]["ready"])
+            self.assertTrue(plan["routing"]["current_mcp_execution_supported"])
             self.assertFalse(plan["method_generation"]["required"])
 
     def test_template_hash_mismatch_blocks_readiness(self) -> None:

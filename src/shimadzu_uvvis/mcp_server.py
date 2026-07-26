@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import os
 import re
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, TypedDict
 
@@ -26,11 +27,17 @@ from .measurements import (
 )
 from .method_manager import UVVisMethodManager, method_generation_support
 from .profiles import ScanDirection, resolve_scan_profile
+from .storage_paths import (
+    existing_batch_directories,
+    safe_storage_component,
+    student_batch_directory,
+)
 
 
 CONFIG_ENVIRONMENT_VARIABLE = "SHIMADZU_UVVIS_CONFIG"
 _BATCH_IDENTIFIER_PATTERN = re.compile(r"[A-Za-z0-9_-]+\Z")
 BaselinePolicy = Literal["new", "reuse_valid"]
+BEIJING_TIMEZONE = timezone(timedelta(hours=8))
 
 
 class SampleBatchItem(TypedDict):
@@ -56,6 +63,10 @@ def _sample_name(value: object, index: int) -> str:
             f"samples[{index}].sample_name must be non-empty and single-line"
         )
     return normalized
+
+
+def _beijing_batch_id() -> str:
+    return datetime.now(BEIJING_TIMEZONE).strftime("uvvis_%Y%m%d_%H%M%S")
 
 
 def _file_sha256(path: Path) -> str | None:
@@ -296,14 +307,11 @@ def build_uvvis_measurement_plan(
     automatic_generation_supported, generation_reason = method_generation_support(
         request
     )
-    mcp_execution_supported = (
-        selected_mode
-        in {
-            "spectrum",
-            "photometric",
-        }
-        and automatic_generation_supported
-    )
+    mcp_execution_supported = selected_mode in {
+        "spectrum",
+        "photometric",
+        "time_course",
+    }
     checks = {
         "template_file_exists": template_file.is_file(),
         "template_sha256_matches": (
@@ -417,6 +425,8 @@ def build_uvvis_sample_batch_plan(
     wavelengths_nm: list[float] | None = None,
     interval_seconds: float | None = None,
     duration_seconds: float | None = None,
+    student_id: str | None = None,
+    experiment_name: str | None = None,
 ) -> dict[str, Any]:
     """Plan sequential measurements that require manual sample replacement."""
 
@@ -466,7 +476,22 @@ def build_uvvis_sample_batch_plan(
         duration_seconds=duration_seconds,
     )
     selected_mode = measurement["mode"]
-    batch_directory = settings.data_dir / normalized_batch_id
+    batch_directory = student_batch_directory(
+        settings.data_dir,
+        normalized_batch_id,
+        student_id=student_id,
+        experiment_name=experiment_name,
+    )
+    student_account = (
+        safe_storage_component(student_id, "student_id", strip_student_prefix=True)
+        if student_id
+        else ""
+    )
+    experiment_directory = (
+        safe_storage_component(experiment_name, "experiment_name")
+        if experiment_name
+        else ""
+    )
     extension = DATA_FILE_EXTENSIONS[selected_mode]
     measurement_command = {
         "spectrum": 111,
@@ -510,9 +535,10 @@ def build_uvvis_sample_batch_plan(
             ],
         }
     sample_plans: list[dict[str, Any]] = []
-    path_conflicts: list[str] = []
-    if batch_directory.exists():
-        path_conflicts.append(str(batch_directory))
+    path_conflicts = [
+        str(path)
+        for path in existing_batch_directories(settings.data_dir, normalized_batch_id)
+    ]
     for sequence_number, (sample_name, source_sample_id) in enumerate(
         normalized_samples, start=1
     ):
@@ -613,6 +639,10 @@ def build_uvvis_sample_batch_plan(
         "status": status,
         "plan_only": True,
         "batch_id": normalized_batch_id,
+        "student_id": str(student_id or "").strip(),
+        "student_account": student_account,
+        "experiment_name": str(experiment_name or "").strip(),
+        "experiment_directory": experiment_directory,
         "mode": selected_mode,
         "routing": measurement["routing"],
         "sample_count": len(sample_plans),
@@ -623,6 +653,11 @@ def build_uvvis_sample_batch_plan(
         "batch_preparation": baseline_preparation,
         "measurement_plan": measurement,
         "batch_directory": str(batch_directory),
+        "storage_layout": (
+            "data/<student_account>/uvvis/<experiment_name>/<batch_id>"
+            if student_account
+            else "data/<batch_id>"
+        ),
         "samples": sample_plans,
         "execution_readiness": {
             "ready": not blocking_reasons,
@@ -856,9 +891,10 @@ def create_mcp_server(
         structured_output=True,
     )
     def plan_uvvis_sample_batch(
-        batch_id: str,
         samples: list[SampleBatchItem],
         reference_name: str,
+        student_id: str,
+        experiment_name: str,
         mode: PlanningMode = "auto",
         measurement_purpose: MeasurementPurpose = "measurement",
         baseline_policy: BaselinePolicy = "new",
@@ -872,13 +908,14 @@ def create_mcp_server(
         wavelengths_nm: list[float] | None = None,
         interval_seconds: float | None = None,
         duration_seconds: float | None = None,
+        batch_id: str | None = None,
     ) -> dict[str, Any]:
-        """Plan a manually exchanged sample batch in deterministic order."""
+        """Plan a student-owned sample batch in deterministic order."""
 
         settings = load_settings(resolved_config)
         return build_uvvis_sample_batch_plan(
             settings,
-            batch_id=batch_id,
+            batch_id=batch_id or _beijing_batch_id(),
             mode=mode,
             measurement_purpose=measurement_purpose,
             samples=samples,
@@ -894,6 +931,8 @@ def create_mcp_server(
             wavelengths_nm=wavelengths_nm,
             interval_seconds=interval_seconds,
             duration_seconds=duration_seconds,
+            student_id=student_id,
+            experiment_name=experiment_name,
         )
 
     @server.tool(
@@ -935,9 +974,9 @@ def create_mcp_server(
         name="start_uvvis_batch",
         title="Start UV-Vis sample batch",
         description=(
-            "Route the range request before starting LabSolutions, require all "
-            "generated Spectrum or Photometric methods, and verify Automatic "
-            "Control. This does not correct a baseline or measure a sample."
+            "Rebuild a previously reviewed Spectrum, Photometric, or Time Course "
+            "plan, require its exact generated method, and verify LabSolutions "
+            "Automatic Control. This does not correct a baseline or measure a sample."
         ),
         annotations=ToolAnnotations(
             readOnlyHint=False,
@@ -951,22 +990,29 @@ def create_mcp_server(
         batch_id: str,
         samples: list[SampleBatchItem],
         reference_name: str,
-        start_nm: float,
-        stop_nm: float,
-        step_nm: float,
         execution_confirmed: bool,
+        student_id: str,
+        experiment_name: str,
+        mode: PlanningMode = "auto",
         baseline_policy: BaselinePolicy = "new",
         signal_type: str = "absorbance",
         template_name: str | None = None,
+        start_nm: float | None = None,
+        stop_nm: float | None = None,
+        step_nm: float | None = None,
         direction: ScanDirection | None = None,
+        wavelength_nm: float | None = None,
+        wavelengths_nm: list[float] | None = None,
+        interval_seconds: float | None = None,
+        duration_seconds: float | None = None,
     ) -> dict[str, Any]:
-        """Start one persisted Spectrum or Photometric manual sample batch."""
+        """Start one persisted manual sample batch from an exact method."""
 
         settings = load_settings(resolved_config)
         plan = build_uvvis_sample_batch_plan(
             settings,
             batch_id=batch_id,
-            mode="auto",
+            mode=mode,
             samples=samples,
             reference_name=reference_name,
             baseline_policy=baseline_policy,
@@ -976,6 +1022,12 @@ def create_mcp_server(
             stop_nm=stop_nm,
             step_nm=step_nm,
             direction=direction,
+            wavelength_nm=wavelength_nm,
+            wavelengths_nm=wavelengths_nm,
+            interval_seconds=interval_seconds,
+            duration_seconds=duration_seconds,
+            student_id=student_id,
+            experiment_name=experiment_name,
         )
         return batch_controller(settings).start(
             plan,

@@ -171,7 +171,8 @@ ID，不使用 Computer Use、截图坐标，也不修改 OLE 二进制字节。
 
 ```json
 {
-  "batch_id": "experiment_20260716_001",
+  "student_id": "stu_20240001",
+  "experiment_name": "银纳米粒子的制备与表征",
   "mode": "spectrum",
   "samples": [
     {"sample_name": "sample A", "sample_id": "sample_a"},
@@ -184,6 +185,10 @@ ID，不使用 Computer Use、截图坐标，也不修改 OLE 二进制字节。
   "step_nm": 1
 }
 ```
+
+`batch_id` 可以省略；工具会按北京时间生成 `uvvis_YYYYMMDD_HHMMSS`。返回的 `batch_id` 必须在
+`start_uvvis_batch` 及后续状态、基线和测量调用中原样复用。带学生和实验上下文时，数据目录为
+`data/<学生账号>/uvvis/<实验名称>/<batch_id>/`。
 
 规划结果把输入样品依次转换为 `001_sample_a`、`002_sample_b`。每个样品都包含状态为
 `required` 的 `replace_sample_and_confirm` 门禁；后续执行器只有收到该样品的现场确认后，才可发送
@@ -223,7 +228,9 @@ ID，不使用 Computer Use、截图坐标，也不修改 OLE 二进制字节。
 
 ```json
 {
-  "batch_id": "experiment_20260716_001",
+  "batch_id": "uvvis_20260724_153012",
+  "student_id": "stu_20240001",
+  "experiment_name": "银纳米粒子的制备与表征",
   "samples": [
     {"sample_name": "sample A", "sample_id": "sample_a"},
     {"sample_name": "sample B", "sample_id": "sample_b"}

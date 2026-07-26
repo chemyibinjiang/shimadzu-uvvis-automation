@@ -10,15 +10,69 @@ from unittest.mock import patch
 from shimadzu_uvvis.results import (
     PhotometricResultError,
     SpectrumResultError,
+    TimeCourseResultError,
     build_photometric_result,
     build_spectrum_result,
+    build_time_course_result,
     normalize_photometric_data_file,
     normalize_spectrum_data_file,
     parse_photometric_data_file,
     parse_photometric_export,
     parse_spectrum_data_file,
     parse_spectrum_export,
+    parse_time_course_export,
 )
+
+
+class TimeCourseResultTests(unittest.TestCase):
+    def test_parses_minutes_and_builds_record_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            export = root / "time-course.csv"
+            export.write_text(
+                "Sample ID,sample_2\nTime (min),Abs.\n"
+                "0,0.8\n1,0.62\n2,0.51\n",
+                encoding="utf-8",
+            )
+
+            result = build_time_course_result(
+                export_file=export,
+                wavelength_nm=400,
+                interval_seconds=60,
+                duration_seconds=120,
+                csv_file=root / "result.csv",
+                json_file=root / "result.json",
+                png_file=root / "result.png",
+                batch_id="batch",
+                sample_id="sample_2",
+                publish_root=root / "published",
+            )
+
+            self.assertEqual(result["point_count"], 3)
+            self.assertEqual(result["record_rows"][1], {
+                "time_seconds": 60.0,
+                "time_min": 1.0,
+                "absorbance": 0.62,
+            })
+            self.assertEqual(
+                (root / "result.csv").read_text(encoding="utf-8").splitlines()[0],
+                "time_seconds,time_min,absorbance",
+            )
+            self.assertEqual((root / "result.png").read_bytes()[:8], b"\x89PNG\r\n\x1a\n")
+
+    def test_rejects_incomplete_time_grid(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            path = Path(temporary_directory) / "time-course.csv"
+            path.write_text(
+                "Time (sec),Absorbance\n0,0.8\n120,0.5\n",
+                encoding="utf-8",
+            )
+            with self.assertRaises(TimeCourseResultError):
+                parse_time_course_export(
+                    path,
+                    interval_seconds=60,
+                    duration_seconds=120,
+                )
 
 
 class PhotometricResultTests(unittest.TestCase):

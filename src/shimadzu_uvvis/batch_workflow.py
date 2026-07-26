@@ -22,6 +22,7 @@ from .results import (
     SpectrumResultError,
     build_photometric_result,
     build_spectrum_result,
+    build_time_course_result,
     normalize_photometric_data_file,
     normalize_spectrum_data_file,
 )
@@ -30,6 +31,7 @@ from .runtime_manager import (
     RuntimeReady,
     settings_for_mode,
 )
+from .storage_paths import existing_batch_directories, student_batch_directory
 
 
 _BATCH_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]+\Z")
@@ -156,10 +158,51 @@ class SpectrumBatchController:
         return normalized
 
     def _batch_directory(self, batch_id: str) -> Path:
-        return self.data_dir / self._batch_id(batch_id)
+        normalized_batch_id = self._batch_id(batch_id)
+        matches = existing_batch_directories(self.data_dir, normalized_batch_id)
+        if len(matches) > 1:
+            raise SpectrumBatchError(
+                f"multiple UV-Vis batch directories use batch_id {normalized_batch_id!r}"
+            )
+        return matches[0] if matches else self.data_dir / normalized_batch_id
 
     def _manifest_path(self, batch_id: str) -> Path:
-        return self._batch_directory(batch_id) / "batch-manifest.json"
+        normalized_batch_id = self._batch_id(batch_id)
+        if self.active_batch_path.is_file():
+            active = self._read_json(self.active_batch_path)
+            if active.get("batch_id") == normalized_batch_id:
+                manifest_path = Path(str(active.get("manifest_path") or "")).resolve()
+                try:
+                    manifest_path.relative_to(self.data_dir.resolve())
+                except ValueError as exc:
+                    raise SpectrumBatchError(
+                        "active UV-Vis manifest path is outside spectrum.data_dir"
+                    ) from exc
+                if (
+                    manifest_path.name != "batch-manifest.json"
+                    or manifest_path.parent.name != normalized_batch_id
+                ):
+                    raise SpectrumBatchError("active UV-Vis manifest path is invalid")
+                return manifest_path
+        return self._batch_directory(normalized_batch_id) / "batch-manifest.json"
+
+    def _manifest_path_for_record(self, manifest: Mapping[str, Any]) -> Path:
+        batch_id = self._batch_id(str(manifest.get("batch_id") or ""))
+        raw_directory = str(manifest.get("batch_directory") or "").strip()
+        batch_directory = (
+            Path(raw_directory).resolve()
+            if raw_directory
+            else self._batch_directory(batch_id).resolve()
+        )
+        try:
+            batch_directory.relative_to(self.data_dir.resolve())
+        except ValueError as exc:
+            raise SpectrumBatchError(
+                "batch manifest directory is outside spectrum.data_dir"
+            ) from exc
+        if batch_directory.name != batch_id:
+            raise SpectrumBatchError("batch manifest directory does not match batch_id")
+        return batch_directory / "batch-manifest.json"
 
     def _read_json(self, path: Path) -> dict[str, Any]:
         try:
@@ -175,7 +218,7 @@ class SpectrumBatchController:
     def _write_manifest(self, manifest: dict[str, Any]) -> None:
         manifest["updated_at_utc"] = _utc_now()
         write_json_atomic(
-            self._manifest_path(str(manifest["batch_id"])),
+            self._manifest_path_for_record(manifest),
             manifest,
         )
 
@@ -185,7 +228,7 @@ class SpectrumBatchController:
             {
                 "schema_version": 1,
                 "batch_id": manifest["batch_id"],
-                "manifest_path": str(self._manifest_path(str(manifest["batch_id"]))),
+                "manifest_path": str(self._manifest_path_for_record(manifest)),
                 "state": manifest["state"],
                 "updated_at_utc": _utc_now(),
             },
@@ -278,13 +321,13 @@ class SpectrumBatchController:
 
     def _validate_start_plan(
         self, plan: Mapping[str, Any]
-    ) -> tuple[str, MeasurementMode, list[Path]]:
+    ) -> tuple[str, MeasurementMode, list[Path], Path]:
         if plan.get("tool") != "plan_uvvis_sample_batch":
             raise SpectrumBatchError("start requires a plan_uvvis_sample_batch result")
         mode = plan.get("mode")
-        if mode not in {"spectrum", "photometric"}:
+        if mode not in {"spectrum", "photometric", "time_course"}:
             raise SpectrumBatchError(
-                "execution currently supports Spectrum and Photometric batches"
+                "execution currently supports Spectrum, Photometric, and Time Course batches"
             )
         if plan.get("status") != "planned":
             raise SpectrumBatchError(
@@ -302,7 +345,15 @@ class SpectrumBatchController:
                 + (", ".join(str(reason) for reason in reasons) or "unknown reason")
             )
         batch_id = self._batch_id(str(plan.get("batch_id", "")))
-        expected_directory = self._batch_directory(batch_id).resolve()
+        try:
+            expected_directory = student_batch_directory(
+                self.data_dir,
+                batch_id,
+                student_id=str(plan.get("student_id") or "") or None,
+                experiment_name=str(plan.get("experiment_name") or "") or None,
+            ).resolve()
+        except ValueError as exc:
+            raise SpectrumBatchError(str(exc)) from exc
         planned_directory = Path(str(plan.get("batch_directory", ""))).resolve()
         if planned_directory != expected_directory:
             raise SpectrumBatchError("batch plan data directory does not match config")
@@ -329,7 +380,7 @@ class SpectrumBatchController:
                 raise SpectrumBatchError(
                     f"generated method file does not exist: {method}"
                 )
-        return batch_id, mode, methods
+        return batch_id, mode, methods, expected_directory
 
     def _reusable_baseline(
         self,
@@ -367,13 +418,13 @@ class SpectrumBatchController:
         try:
             with self._lock():
                 self._ensure_no_active_batch()
-                batch_id, mode, methods = self._validate_start_plan(plan)
+                batch_id, mode, methods, batch_directory = self._validate_start_plan(plan)
                 runtime_manager = self._runtime_manager(mode)
                 runtime_ready = runtime_manager.ensure_ready(allow_reconfigure=True)
-                batch_directory = self._batch_directory(batch_id)
-                if batch_directory.exists():
+                existing_directories = existing_batch_directories(self.data_dir, batch_id)
+                if existing_directories:
                     raise SpectrumBatchError(
-                        f"batch directory already exists: {batch_directory}"
+                        f"batch directory already exists: {existing_directories[0]}"
                     )
 
                 method_sha256s = [_sha256(method) for method in methods]
@@ -388,7 +439,7 @@ class SpectrumBatchController:
                         reference_name=reference_name,
                     )
 
-                batch_directory.mkdir(parents=False)
+                batch_directory.mkdir(parents=True, exist_ok=False)
                 preparation: dict[str, Any] | None = None
                 if mode == "photometric":
                     preparation_directory = batch_directory / "preparation"
@@ -421,6 +472,11 @@ class SpectrumBatchController:
                 manifest: dict[str, Any] = {
                     "schema_version": 1,
                     "batch_id": batch_id,
+                    "batch_directory": str(batch_directory),
+                    "student_id": str(plan.get("student_id") or ""),
+                    "student_account": str(plan.get("student_account") or ""),
+                    "experiment_name": str(plan.get("experiment_name") or ""),
+                    "experiment_directory": str(plan.get("experiment_directory") or ""),
                     "mode": mode,
                     "state": "STARTING",
                     "created_at_utc": now,
@@ -510,7 +566,7 @@ class SpectrumBatchController:
                                 client.send_command(100, ParameterFileName=methods[0]),
                                 phase="start",
                             )
-                        else:
+                        elif mode == "photometric":
                             assert preparation is not None
                             self._append_feedback(
                                 manifest,
@@ -523,6 +579,12 @@ class SpectrumBatchController:
                             )
                             preparation["status"] = "OPEN"
                             self._write_manifest(manifest)
+                        else:
+                            self._append_feedback(
+                                manifest,
+                                client.send_command(400, ParameterFileName=methods[0]),
+                                phase="start:time_course",
+                            )
 
                     prompt_dismissed = (
                         runtime_manager.dismiss_parameter_change_baseline_prompt(
@@ -872,6 +934,70 @@ class SpectrumBatchController:
             self._write_manifest(manifest)
         return records
 
+    def _measure_time_course_sample(
+        self,
+        *,
+        client: LabSolutionsClient,
+        manifest: dict[str, Any],
+        sample: dict[str, Any],
+        sample_id: str,
+    ) -> list[dict[str, Any]]:
+        raw_path = Path(str(sample["paths"]["raw_data_file"]))
+        started_at = time.time()
+        self._append_feedback(
+            manifest,
+            client.send_command(
+                410,
+                DataFileName=raw_path,
+                SampleName=str(sample["sample_name"]),
+                SampleID=sample_id,
+            ),
+            phase=f"sample:{sample_id}",
+        )
+        duration_seconds = float(manifest["request"]["duration_seconds"])
+        measurement_timeout = max(
+            self.settings.timeout_seconds,
+            duration_seconds + max(120.0, self.settings.stable_seconds + 30.0),
+        )
+        self._append_feedback(
+            manifest,
+            client.send_command(
+                411,
+                MeasurementMode=self.settings.measurement_mode,
+                Discharge=self.settings.discharge_after_measurement,
+                timeout=measurement_timeout,
+            ),
+            phase=f"sample:{sample_id}",
+        )
+        self._wait_for_stable_file(raw_path)
+        assert self.settings.export_dir is not None
+        export_source = client.wait_for_export(
+            self.settings.export_dir,
+            pattern=_export_pattern(
+                self.settings.export_pattern,
+                sample_id,
+                str(sample["sample_name"]),
+            ),
+            since=started_at,
+            timeout=self.settings.export_timeout_seconds,
+            stable_seconds=self.settings.stable_seconds,
+        )
+        archived = self._archive_export(
+            export_source,
+            Path(str(sample["paths"]["export_directory"])),
+        )
+        return [
+            {
+                "segment_index": 1,
+                "sample_id": sample_id,
+                "raw_data": _file_metadata(raw_path),
+                "export": _file_metadata(archived),
+                "export_source": str(export_source),
+                "result_source_kind": "labsolutions_time_course_export",
+                "measurement_timeout_seconds": measurement_timeout,
+            }
+        ]
+
     def _build_sample_result(
         self,
         *,
@@ -906,13 +1032,35 @@ class SpectrumBatchController:
         sample["export_source"] = [
             segment["export_source"] for segment in segment_records
         ]
-        sample["result"] = build_photometric_result(
-            export_files=[
-                Path(str(segment["export"]["path"])) for segment in segment_records
-            ],
-            expected_segments=[
-                list(segment["wavelengths_nm"]) for segment in segment_records
-            ],
+        if mode == "photometric":
+            sample["result"] = build_photometric_result(
+                export_files=[
+                    Path(str(segment["export"]["path"]))
+                    for segment in segment_records
+                ],
+                expected_segments=[
+                    list(segment["wavelengths_nm"]) for segment in segment_records
+                ],
+                csv_file=Path(str(sample["paths"]["merged_csv_file"])),
+                json_file=Path(str(sample["paths"]["result_json_file"])),
+                png_file=Path(str(sample["paths"]["plot_file"])),
+                batch_id=str(manifest["batch_id"]),
+                sample_id=sample_id,
+                publish_root=self.settings.result_dir,
+            )
+            return
+
+        if mode != "time_course":
+            raise SpectrumBatchError(f"unsupported result mode: {mode}")
+        sample["raw_data"] = segment_records[0]["raw_data"]
+        sample["export"] = segment_records[0]["export"]
+        sample["export_source"] = segment_records[0]["export_source"]
+        request = manifest["request"]
+        sample["result"] = build_time_course_result(
+            export_file=Path(str(segment_records[0]["export"]["path"])),
+            wavelength_nm=float(request["wavelength_nm"]),
+            interval_seconds=float(request["interval_seconds"]),
+            duration_seconds=float(request["duration_seconds"]),
             csv_file=Path(str(sample["paths"]["merged_csv_file"])),
             json_file=Path(str(sample["paths"]["result_json_file"])),
             png_file=Path(str(sample["paths"]["plot_file"])),
@@ -1065,6 +1213,13 @@ class SpectrumBatchController:
                                 manifest=manifest,
                                 sample=sample,
                                 methods=methods,
+                            )
+                        elif mode == "time_course":
+                            segment_records = self._measure_time_course_sample(
+                                client=client,
+                                manifest=manifest,
+                                sample=sample,
+                                sample_id=expected_id,
                             )
                         else:
                             raise SpectrumBatchError(f"unsupported batch mode: {mode}")
@@ -1291,6 +1446,12 @@ class SpectrumBatchController:
             next_action = "wait_for_current_operation"
         return {
             "batch_id": manifest.get("batch_id"),
+            "batch_directory": str(
+                self._manifest_path_for_record(manifest).parent
+            ),
+            "student_id": manifest.get("student_id"),
+            "student_account": manifest.get("student_account"),
+            "experiment_name": manifest.get("experiment_name"),
             "mode": manifest.get("mode"),
             "state": state,
             "next_action": next_action,
@@ -1320,11 +1481,12 @@ class SpectrumBatchController:
                     "status": sample.get("status"),
                     "raw_data": sample.get("raw_data"),
                     "export": sample.get("export"),
+                    "result": sample.get("result"),
                 }
                 for sample in samples
             ],
             "last_error": manifest.get("last_error"),
-            "manifest_path": str(self._manifest_path(str(manifest["batch_id"]))),
+            "manifest_path": str(self._manifest_path_for_record(manifest)),
             "updated_at_utc": manifest.get("updated_at_utc"),
         }
 

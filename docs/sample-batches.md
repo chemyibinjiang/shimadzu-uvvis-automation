@@ -37,11 +37,13 @@ Runtime Manager 自动校验目录、进入 Waiting，并完成 Hello
 
 ## 标识与目录
 
-`batch_id` 和输入 `sample_id` 只允许 ASCII 字母、数字、下划线和连字符。批次规划按输入顺序
-生成三位序号，并将序号加入实际发送给 LabSolutions 的 `SampleID`：
+AI Tutor 调用批次规划时传入登录学生的 `student_id` 和当前 `experiment_name`。学生账号目录会去掉
+内部 `stu_` 前缀；批次编号默认按北京时间生成 `uvvis_YYYYMMDD_HHMMSS`。`batch_id` 和输入
+`sample_id` 只允许 ASCII 字母、数字、下划线和连字符。批次规划按输入顺序生成三位序号，并将序号
+加入实际发送给 LabSolutions 的 `SampleID`：
 
 ```text
-D:\UVVis-Automation\data\experiment_20260716_001\
+D:\UVVis-Automation\data\20240001\uvvis\银纳米粒子的制备与表征\uvvis_20260724_153012\
   001_sample_a\
     raw\
       001_sample_a.vspd
@@ -57,6 +59,9 @@ D:\UVVis-Automation\data\experiment_20260716_001\
       result.png
     manifest.json
 ```
+
+未提供学生和实验上下文的旧调用继续使用兼容目录 `data\<batch_id>\`。学生账号和实验名称必须同时
+提供；路径中的 Windows 非法字符会替换为下划线。
 
 原始数据扩展名由模式决定：Spectrum `.vspd`、Photometric `.vphd`、Quantitation `.vqud`、
 Time Course `.vtmd`。Photometric 超过 10 个波长时，同一个样品的 `raw` 目录包含多个分段

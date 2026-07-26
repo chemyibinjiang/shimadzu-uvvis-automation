@@ -30,6 +30,8 @@ class FakeSpectrumClient:
         self.data_file: Path | None = None
         self.sample_id: str | None = None
         self.wavelengths: list[float] = [500.0]
+        self.time_course_interval_seconds = 60.0
+        self.time_course_duration_seconds = 120.0
         self.fail_command: int | None = None
         self.reject_command: int | None = None
         self.already_connected = False
@@ -99,6 +101,20 @@ class FakeSpectrumClient:
             ]
         if command == 310:
             self.sample_id = str(parameters["SampleID"])
+        if command == 400:
+            stem = Path(str(parameters["ParameterFileName"])).stem
+            tokens = stem.removeprefix("time_course_").removesuffix(
+                "_absorbance"
+            ).split("_")
+            self.time_course_interval_seconds = float(
+                tokens[1].removesuffix("s").replace("p", ".")
+            )
+            self.time_course_duration_seconds = float(
+                tokens[2].removesuffix("s").replace("p", ".")
+            )
+        if command == 410:
+            self.data_file = Path(str(parameters["DataFileName"]))
+            self.sample_id = str(parameters["SampleID"])
         if command == 111:
             assert self.data_file is not None
             assert self.sample_id is not None
@@ -120,6 +136,23 @@ class FakeSpectrumClient:
                 + "".join(
                     f"{wavelength:g},{0.1 + wavelength / 10000:.6f}\n"
                     for wavelength in self.wavelengths
+                ),
+                encoding="utf-8",
+            )
+        if command == 411:
+            assert self.data_file is not None
+            assert self.sample_id is not None
+            self.data_file.write_bytes(b"SIMULATED VTMD")
+            point_count = round(
+                self.time_course_duration_seconds
+                / self.time_course_interval_seconds
+            ) + 1
+            (self.export_dir / f"{self.sample_id}_result.csv").write_text(
+                "Time (min),Abs.\n"
+                + "".join(
+                    f"{index * self.time_course_interval_seconds / 60:g},"
+                    f"{0.8 - index * 0.01:.6f}\n"
+                    for index in range(point_count)
                 ),
                 encoding="utf-8",
             )
@@ -194,8 +227,15 @@ class SpectrumBatchControllerTests(unittest.TestCase):
             (root / name).mkdir()
         template = root / "templates" / "spectrum_absorbance.vspm"
         template.write_bytes(b"TEMPLATE")
+        time_course_template = root / "templates" / "time_course_absorbance.vtmm"
+        time_course_template.write_bytes(b"TIME COURSE TEMPLATE")
         generated = root / "generated" / "spectrum_400_700_1nm_absorbance.vspm"
         generated.write_bytes(b"VERIFIED GENERATED METHOD")
+        (
+            root
+            / "generated"
+            / "time_course_400nm_60s_2040s_absorbance.vtmm"
+        ).write_bytes(b"VERIFIED TIME COURSE METHOD")
         config = root / "control.toml"
         config.write_text(
             f"""
@@ -229,6 +269,11 @@ output_directory = "{(root / "generated").as_posix()}"
 mode = "spectrum"
 signal_type = "absorbance"
 method_file = "{template.as_posix()}"
+
+[method_templates.time_course_absorbance]
+mode = "time_course"
+signal_type = "absorbance"
+method_file = "{time_course_template.as_posix()}"
 
 [results]
 directory = "{(root / "outputs").as_posix()}"
@@ -366,6 +411,111 @@ directory = "{(root / "outputs").as_posix()}"
             self.assertEqual(aborted["state"], "ABORTED")
             self.assertFalse(controller.active_batch_path.exists())
             self.assertEqual([item[0] for item in fake.commands], [100])
+
+    def test_nested_student_batch_can_be_reloaded_after_active_marker_is_cleared(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config, _ = self._fixture(root)
+            settings = load_settings(config)
+            fake = FakeSpectrumClient(root / "export")
+            runtime = FakeRuntimeManager(root / "control")
+            controller = SpectrumBatchController(
+                settings,
+                client_factory=lambda: fake,  # type: ignore[arg-type]
+                runtime_manager_factory=lambda: runtime,  # type: ignore[arg-type]
+            )
+            batch_id = "uvvis_20260724_153012"
+            plan = build_uvvis_sample_batch_plan(
+                settings,
+                batch_id=batch_id,
+                mode="spectrum",
+                samples=[{"sample_name": "1号样品", "sample_id": "sample_01"}],
+                reference_name="blank",
+                start_nm=400,
+                stop_nm=700,
+                step_nm=1,
+                student_id="stu_20240001",
+                experiment_name="银纳米粒子的制备与表征",
+            )
+
+            started = controller.start(plan, execution_confirmed=True)
+            expected_directory = (
+                root
+                / "data"
+                / "20240001"
+                / "uvvis"
+                / "银纳米粒子的制备与表征"
+                / batch_id
+            )
+            self.assertEqual(Path(started["batch_directory"]), expected_directory)
+            self.assertTrue((expected_directory / "batch-manifest.json").is_file())
+
+            controller.abort(
+                batch_id,
+                reason="test completed",
+                abort_confirmed=True,
+            )
+            self.assertFalse(controller.active_batch_path.exists())
+
+            reloaded = SpectrumBatchController(settings)
+            status = reloaded.get_status(batch_id)
+            self.assertEqual(status["state"], "ABORTED")
+            self.assertEqual(status["student_account"], "20240001")
+            self.assertEqual(status["experiment_name"], "银纳米粒子的制备与表征")
+            self.assertEqual(Path(status["batch_directory"]), expected_directory)
+
+    def test_time_course_batch_executes_400_410_411_and_returns_record_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config, _ = self._fixture(root)
+            settings = load_settings(config)
+            fake = FakeSpectrumClient(root / "export")
+            runtime = FakeRuntimeManager(root / "control")
+            controller = SpectrumBatchController(
+                settings,
+                client_factory=lambda: fake,  # type: ignore[arg-type]
+                runtime_manager_factory=lambda: runtime,  # type: ignore[arg-type]
+            )
+            plan = build_uvvis_sample_batch_plan(
+                settings,
+                batch_id="kinetics_400nm",
+                mode="time_course",
+                samples=[{"sample_name": "2号 Ag NPs", "sample_id": "sample_2"}],
+                reference_name="sample_2_reference",
+                wavelength_nm=400,
+                interval_seconds=60,
+                duration_seconds=2040,
+            )
+
+            started = controller.start(plan, execution_confirmed=True)
+            self.assertEqual(started["state"], "WAITING_FOR_BLANK")
+            controller.correct_baseline(
+                "kinetics_400nm", blank_loaded_confirmed=True
+            )
+            completed = controller.measure_next(
+                "kinetics_400nm",
+                sample_id="001_sample_2",
+                sample_loaded_confirmed=True,
+            )
+
+            self.assertEqual(completed["state"], "COMPLETED")
+            self.assertEqual(
+                [command for command, _ in fake.commands],
+                [400, 21, 410, 411],
+            )
+            command_411 = fake.commands[-1][1]
+            self.assertGreaterEqual(float(command_411["timeout"]), 2160.0)
+            result = completed["samples"][0]["result"]
+            self.assertEqual(result["mode"], "time_course")
+            self.assertEqual(result["point_count"], 35)
+            self.assertEqual(result["record_rows"][0]["time_min"], 0.0)
+            self.assertEqual(result["record_rows"][-1]["time_min"], 34.0)
+            sample_dir = root / "data" / "kinetics_400nm" / "001_sample_2"
+            self.assertTrue(
+                (sample_dir / "raw" / "001_sample_2.vtmd").is_file()
+            )
+            self.assertTrue((sample_dir / "export" / "result.json").is_file())
+            self.assertTrue((sample_dir / "plot" / "result.png").is_file())
 
     def test_start_accepts_command_1_already_connected_feedback(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
