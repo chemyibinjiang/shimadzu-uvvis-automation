@@ -3,11 +3,13 @@ from __future__ import annotations
 import struct
 import tempfile
 import unittest
+import zlib
 from io import BytesIO
 from pathlib import Path
 from unittest.mock import patch
 
 from shimadzu_uvvis.results import (
+    _format_plot_number,
     PhotometricResultError,
     SpectrumResultError,
     TimeCourseResultError,
@@ -22,6 +24,50 @@ from shimadzu_uvvis.results import (
     parse_spectrum_export,
     parse_time_course_export,
 )
+
+
+def _png_rgb_rows(path: Path) -> list[bytes]:
+    content = path.read_bytes()
+    position = 8
+    width = 0
+    height = 0
+    compressed = bytearray()
+    while position < len(content):
+        length = struct.unpack(">I", content[position : position + 4])[0]
+        name = content[position + 4 : position + 8]
+        data = content[position + 8 : position + 8 + length]
+        position += 12 + length
+        if name == b"IHDR":
+            width, height = struct.unpack(">II", data[:8])
+        elif name == b"IDAT":
+            compressed.extend(data)
+        elif name == b"IEND":
+            break
+    raw = zlib.decompress(bytes(compressed))
+    stride = width * 3
+    rows = []
+    for row_index in range(height):
+        start = row_index * (stride + 1)
+        if raw[start] != 0:
+            raise AssertionError("test PNG uses an unexpected scanline filter")
+        rows.append(raw[start + 1 : start + 1 + stride])
+    return rows
+
+
+def _non_white_pixels(rows: list[bytes], *, x0: int, x1: int, y0: int, y1: int) -> int:
+    return sum(
+        1
+        for row in rows[y0:y1]
+        for offset in range(x0 * 3, x1 * 3, 3)
+        if tuple(row[offset : offset + 3]) != (255, 255, 255)
+    )
+
+
+class PlotFormattingTests(unittest.TestCase):
+    def test_integer_ticks_keep_significant_trailing_zeroes(self) -> None:
+        self.assertEqual(_format_plot_number(400, 300), "400")
+        self.assertEqual(_format_plot_number(700, 300), "700")
+        self.assertEqual(_format_plot_number(0.745244264603, 0.8, maximum=True), "0.745244")
 
 
 class TimeCourseResultTests(unittest.TestCase):
@@ -331,6 +377,24 @@ class SpectrumResultTests(unittest.TestCase):
             self.assertEqual(
                 (root / "result.png").read_bytes()[:8], b"\x89PNG\r\n\x1a\n"
             )
+            png_content = (root / "result.png").read_bytes()
+            self.assertIn(b"maximum 0.7 at 401 nm", png_content)
+            rows = _png_rgb_rows(root / "result.png")
+            self.assertGreater(
+                _non_white_pixels(rows, x0=0, x1=95, y0=40, y1=510),
+                100,
+            )
+            self.assertGreater(
+                _non_white_pixels(rows, x0=100, x1=980, y0=515, y1=595),
+                100,
+            )
+            red_pixels = sum(
+                1
+                for row in rows
+                for offset in range(0, len(row), 3)
+                if row[offset] > 120 and row[offset + 1] < 100 and row[offset + 2] < 100
+            )
+            self.assertGreater(red_pixels, 120)
             published = root / "published" / "batch" / "sample"
             self.assertTrue((published / "result.csv").is_file())
             self.assertTrue((published / "result.json").is_file())

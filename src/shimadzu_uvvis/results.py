@@ -729,18 +729,161 @@ def _line(
             y0 += sy
 
 
+_PLOT_FONT: dict[str, tuple[str, ...]] = {
+    " ": ("00000",) * 7,
+    "(": ("00110", "01000", "10000", "10000", "10000", "01000", "00110"),
+    ")": ("01100", "00010", "00001", "00001", "00001", "00010", "01100"),
+    ",": ("00000", "00000", "00000", "00000", "00110", "00100", "01000"),
+    "-": ("00000", "00000", "00000", "11111", "00000", "00000", "00000"),
+    ".": ("00000", "00000", "00000", "00000", "00000", "00110", "00110"),
+    ":": ("00000", "00110", "00110", "00000", "00110", "00110", "00000"),
+    "0": ("01110", "10001", "10011", "10101", "11001", "10001", "01110"),
+    "1": ("00100", "01100", "00100", "00100", "00100", "00100", "01110"),
+    "2": ("01110", "10001", "00001", "00010", "00100", "01000", "11111"),
+    "3": ("11110", "00001", "00001", "01110", "00001", "00001", "11110"),
+    "4": ("00010", "00110", "01010", "10010", "11111", "00010", "00010"),
+    "5": ("11111", "10000", "10000", "11110", "00001", "00001", "11110"),
+    "6": ("01110", "10000", "10000", "11110", "10001", "10001", "01110"),
+    "7": ("11111", "00001", "00010", "00100", "01000", "01000", "01000"),
+    "8": ("01110", "10001", "10001", "01110", "10001", "10001", "01110"),
+    "9": ("01110", "10001", "10001", "01111", "00001", "00001", "01110"),
+    "A": ("01110", "10001", "10001", "11111", "10001", "10001", "10001"),
+    "B": ("11110", "10001", "10001", "11110", "10001", "10001", "11110"),
+    "C": ("01111", "10000", "10000", "10000", "10000", "10000", "01111"),
+    "E": ("11111", "10000", "10000", "11110", "10000", "10000", "11111"),
+    "G": ("01111", "10000", "10000", "10111", "10001", "10001", "01111"),
+    "H": ("10001", "10001", "10001", "11111", "10001", "10001", "10001"),
+    "I": ("11111", "00100", "00100", "00100", "00100", "00100", "11111"),
+    "L": ("10000", "10000", "10000", "10000", "10000", "10000", "11111"),
+    "M": ("10001", "11011", "10101", "10101", "10001", "10001", "10001"),
+    "N": ("10001", "11001", "10101", "10011", "10001", "10001", "10001"),
+    "O": ("01110", "10001", "10001", "10001", "10001", "10001", "01110"),
+    "R": ("11110", "10001", "10001", "11110", "10100", "10010", "10001"),
+    "S": ("01111", "10000", "10000", "01110", "00001", "00001", "11110"),
+    "T": ("11111", "00100", "00100", "00100", "00100", "00100", "00100"),
+    "V": ("10001", "10001", "10001", "10001", "10001", "01010", "00100"),
+    "W": ("10001", "10001", "10001", "10101", "10101", "10101", "01010"),
+    "X": ("10001", "10001", "01010", "00100", "01010", "10001", "10001"),
+    "Y": ("10001", "10001", "01010", "00100", "00100", "00100", "00100"),
+    "?": ("01110", "10001", "00001", "00010", "00100", "00000", "00100"),
+}
+
+
+def _fill_rectangle(
+    pixels: bytearray,
+    width: int,
+    height: int,
+    left: int,
+    top: int,
+    right: int,
+    bottom: int,
+    color: tuple[int, int, int],
+) -> None:
+    clipped_left = max(0, left)
+    clipped_right = min(width - 1, right)
+    clipped_top = max(0, top)
+    clipped_bottom = min(height - 1, bottom)
+    if clipped_left > clipped_right or clipped_top > clipped_bottom:
+        return
+    row = bytes(color) * (clipped_right - clipped_left + 1)
+    for y in range(clipped_top, clipped_bottom + 1):
+        start = (y * width + clipped_left) * 3
+        pixels[start : start + len(row)] = row
+
+
+def _text_size(text: str, *, scale: int = 1, vertical: bool = False) -> tuple[int, int]:
+    horizontal_width = max(0, (len(text) * 6 - 1) * scale)
+    horizontal_height = 7 * scale
+    return (
+        (horizontal_height, horizontal_width)
+        if vertical
+        else (horizontal_width, horizontal_height)
+    )
+
+
+def _draw_text(
+    pixels: bytearray,
+    width: int,
+    height: int,
+    origin: tuple[int, int],
+    text: str,
+    color: tuple[int, int, int],
+    *,
+    scale: int = 1,
+    vertical: bool = False,
+) -> None:
+    normalized = text.upper()
+    horizontal_width, _ = _text_size(normalized, scale=scale)
+    origin_x, origin_y = origin
+    for character_index, character in enumerate(normalized):
+        glyph = _PLOT_FONT.get(character, _PLOT_FONT["?"])
+        character_x = character_index * 6 * scale
+        for glyph_y, row in enumerate(glyph):
+            for glyph_x, value in enumerate(row):
+                if value != "1":
+                    continue
+                for scale_y in range(scale):
+                    for scale_x in range(scale):
+                        pixel_x = character_x + glyph_x * scale + scale_x
+                        pixel_y = glyph_y * scale + scale_y
+                        if vertical:
+                            target_x = origin_x + pixel_y
+                            target_y = origin_y + horizontal_width - 1 - pixel_x
+                        else:
+                            target_x = origin_x + pixel_x
+                            target_y = origin_y + pixel_y
+                        if 0 <= target_x < width and 0 <= target_y < height:
+                            offset = (target_y * width + target_x) * 3
+                            pixels[offset : offset + 3] = bytes(color)
+
+
+def _format_plot_number(value: float, span: float, *, maximum: bool = False) -> str:
+    if maximum:
+        text = f"{value:.6g}"
+    else:
+        absolute_span = abs(span)
+        decimals = 0 if absolute_span >= 100 else 1 if absolute_span >= 10 else 2 if absolute_span >= 1 else 3
+        text = f"{value:.0f}" if decimals == 0 else f"{value:.{decimals}f}".rstrip("0").rstrip(".")
+    return "0" if text in {"-0", "-0.0", ""} else text
+
+
+def _dashed_guide(
+    pixels: bytearray,
+    width: int,
+    height: int,
+    start: tuple[int, int],
+    end: tuple[int, int],
+    color: tuple[int, int, int],
+) -> None:
+    x0, y0 = start
+    x1, y1 = end
+    if x0 == x1:
+        low, high = sorted((y0, y1))
+        for y in range(low, high + 1, 10):
+            _line(pixels, width, height, (x0, y), (x0, min(y + 5, high)), color)
+    elif y0 == y1:
+        low, high = sorted((x0, x1))
+        for x in range(low, high + 1, 10):
+            _line(pixels, width, height, (x, y0), (min(x + 5, high), y0), color)
+
+
 def _png_chunk(name: bytes, data: bytes) -> bytes:
     body = name + data
     return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
 
 
-def write_spectrum_png(path: Path, points: Sequence[AbsorbancePoint]) -> None:
+def write_spectrum_png(
+    path: Path,
+    points: Sequence[AbsorbancePoint],
+    *,
+    x_axis_label: str = "WAVELENGTH (NM)",
+) -> None:
     """Render a stable 1000x600 line plot using only the standard library."""
 
     if not points:
         raise PhotometricResultError("cannot plot an empty Photometric result")
     width, height = 1000, 600
-    left, right, top, bottom = 90, 40, 40, 70
+    left, right, top, bottom = 115, 45, 45, 95
     pixels = bytearray([255] * width * height * 3)
     plot_width = width - left - right
     plot_height = height - top - bottom
@@ -760,19 +903,80 @@ def write_spectrum_png(path: Path, points: Sequence[AbsorbancePoint]) -> None:
         y_min -= padding
         y_max += padding
 
+    axis_color = (45, 50, 55)
+    label_color = (35, 40, 45)
     for tick in range(6):
-        x = left + round(plot_width * tick / 5)
-        y = top + round(plot_height * tick / 5)
+        fraction = tick / 5
+        x = left + round(plot_width * fraction)
+        y = top + plot_height - round(plot_height * fraction)
         _line(pixels, width, height, (x, top), (x, top + plot_height), (230, 234, 238))
         _line(pixels, width, height, (left, y), (left + plot_width, y), (230, 234, 238))
-    _line(pixels, width, height, (left, top), (left, top + plot_height), (60, 65, 70))
+        _line(
+            pixels,
+            width,
+            height,
+            (x, top + plot_height),
+            (x, top + plot_height + 6),
+            axis_color,
+        )
+        _line(pixels, width, height, (left - 6, y), (left, y), axis_color)
+
+        x_value = x_min + (x_max - x_min) * fraction
+        x_text = _format_plot_number(x_value, x_max - x_min)
+        x_text_width, _ = _text_size(x_text, scale=2)
+        _draw_text(
+            pixels,
+            width,
+            height,
+            (x - x_text_width // 2, top + plot_height + 12),
+            x_text,
+            label_color,
+            scale=2,
+        )
+
+        y_value = y_min + (y_max - y_min) * fraction
+        y_text = _format_plot_number(y_value, y_max - y_min)
+        y_text_width, y_text_height = _text_size(y_text, scale=2)
+        _draw_text(
+            pixels,
+            width,
+            height,
+            (left - y_text_width - 12, y - y_text_height // 2),
+            y_text,
+            label_color,
+            scale=2,
+        )
+    _line(pixels, width, height, (left, top), (left, top + plot_height), axis_color)
     _line(
         pixels,
         width,
         height,
         (left, top + plot_height),
         (left + plot_width, top + plot_height),
-        (60, 65, 70),
+        axis_color,
+    )
+
+    x_label_width, _ = _text_size(x_axis_label, scale=2)
+    _draw_text(
+        pixels,
+        width,
+        height,
+        (left + (plot_width - x_label_width) // 2, height - 28),
+        x_axis_label,
+        label_color,
+        scale=2,
+    )
+    y_axis_label = "ABSORBANCE"
+    y_label_width, y_label_height = _text_size(y_axis_label, scale=2, vertical=True)
+    _draw_text(
+        pixels,
+        width,
+        height,
+        (20, top + (plot_height - y_label_height) // 2),
+        y_axis_label,
+        label_color,
+        scale=2,
+        vertical=True,
     )
 
     coordinates = [
@@ -786,6 +990,22 @@ def write_spectrum_png(path: Path, points: Sequence[AbsorbancePoint]) -> None:
         _line(pixels, width, height, start, end, (20, 105, 180))
     maximum_index = max(range(len(points)), key=lambda index: points[index].absorbance)
     maximum = coordinates[maximum_index]
+    _dashed_guide(
+        pixels,
+        width,
+        height,
+        (left, maximum[1]),
+        maximum,
+        (215, 135, 135),
+    )
+    _dashed_guide(
+        pixels,
+        width,
+        height,
+        (maximum[0], top + plot_height),
+        maximum,
+        (215, 135, 135),
+    )
     for offset in range(-4, 5):
         _line(
             pixels,
@@ -796,11 +1016,77 @@ def write_spectrum_png(path: Path, points: Sequence[AbsorbancePoint]) -> None:
             (190, 45, 45),
         )
 
+    maximum_point = points[maximum_index]
+    maximum_text = (
+        f"MAX X:{_format_plot_number(maximum_point.wavelength_nm, x_max - x_min, maximum=True)} NM "
+        f"Y:{_format_plot_number(maximum_point.absorbance, y_max - y_min, maximum=True)}"
+    )
+    maximum_text_width, maximum_text_height = _text_size(maximum_text, scale=2)
+    box_width = maximum_text_width + 16
+    box_height = maximum_text_height + 14
+    if maximum[0] + 18 + box_width <= left + plot_width:
+        box_left = maximum[0] + 18
+    else:
+        box_left = maximum[0] - box_width - 18
+    if maximum[1] + 18 + box_height <= top + plot_height:
+        box_top = maximum[1] + 18
+    else:
+        box_top = maximum[1] - box_height - 18
+    box_left = max(left + 8, min(box_left, left + plot_width - box_width - 8))
+    box_top = max(top + 8, min(box_top, top + plot_height - box_height - 8))
+    _line(
+        pixels,
+        width,
+        height,
+        maximum,
+        (
+            box_left if box_left > maximum[0] else box_left + box_width,
+            box_top + box_height // 2,
+        ),
+        (190, 45, 45),
+    )
+    _fill_rectangle(
+        pixels,
+        width,
+        height,
+        box_left,
+        box_top,
+        box_left + box_width,
+        box_top + box_height,
+        (255, 255, 255),
+    )
+    _line(pixels, width, height, (box_left, box_top), (box_left + box_width, box_top), (190, 45, 45))
+    _line(
+        pixels,
+        width,
+        height,
+        (box_left, box_top + box_height),
+        (box_left + box_width, box_top + box_height),
+        (190, 45, 45),
+    )
+    _line(pixels, width, height, (box_left, box_top), (box_left, box_top + box_height), (190, 45, 45))
+    _line(
+        pixels,
+        width,
+        height,
+        (box_left + box_width, box_top),
+        (box_left + box_width, box_top + box_height),
+        (190, 45, 45),
+    )
+    _draw_text(
+        pixels,
+        width,
+        height,
+        (box_left + 8, box_top + 7),
+        maximum_text,
+        (150, 35, 35),
+        scale=2,
+    )
+
     scanlines = b"".join(
         b"\0" + bytes(pixels[row * width * 3 : (row + 1) * width * 3])
         for row in range(height)
     )
-    maximum_point = points[maximum_index]
     description = (
         f"UV-Vis absorbance; maximum {maximum_point.absorbance:.12g} at "
         f"{maximum_point.wavelength_nm:g} nm"
@@ -828,7 +1114,7 @@ def write_time_course_png(path: Path, points: Sequence[TimeCoursePoint]) -> None
         AbsorbancePoint(point.time_seconds / 60.0, point.absorbance)
         for point in points
     ]
-    write_spectrum_png(path, spectrum_points)
+    write_spectrum_png(path, spectrum_points, x_axis_label="TIME (MIN)")
 
 
 def _build_result_bundle(
