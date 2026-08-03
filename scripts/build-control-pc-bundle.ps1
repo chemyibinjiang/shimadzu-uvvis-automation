@@ -6,9 +6,16 @@ param(
 $ErrorActionPreference = 'Stop'
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $git = Get-Command 'git.exe' -ErrorAction Stop
+$projectFile = Join-Path $repoRoot 'pyproject.toml'
+$projectContent = Get-Content -Raw -LiteralPath $projectFile
+$versionMatch = [regex]::Match($projectContent, '(?m)^version\s*=\s*"([^"]+)"\s*$')
+if (-not $versionMatch.Success) {
+    throw "Could not read the project version from $projectFile"
+}
+$projectVersion = $versionMatch.Groups[1].Value
 
 if ([string]::IsNullOrWhiteSpace($OutputPath)) {
-    $OutputPath = Join-Path $repoRoot 'dist\shimadzu-uvvis-control-pc-0.4.0.zip'
+    $OutputPath = Join-Path $repoRoot "dist\shimadzu-uvvis-control-pc-$projectVersion.zip"
 }
 $output = [System.IO.Path]::GetFullPath($OutputPath)
 $outputDirectory = Split-Path -Parent $output
