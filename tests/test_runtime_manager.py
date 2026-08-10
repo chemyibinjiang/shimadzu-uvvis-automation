@@ -6,6 +6,7 @@ from pathlib import Path
 from types import MappingProxyType
 
 from shimadzu_uvvis.client import Feedback
+from shimadzu_uvvis.client import LabSolutionsCommandError
 from shimadzu_uvvis.configuration import load_settings
 from shimadzu_uvvis.runtime_manager import (
     LabSolutionsRuntimeError,
@@ -29,6 +30,11 @@ class FakeRuntimeBackend:
         self.calls: list[object] = []
         self.window = SpectrumWindow(1234, 5678, "Spectrum - [Analysis]")
         self.baseline_prompt = False
+        self.window_available = True
+
+    def find_spectrum_window(self) -> SpectrumWindow | None:
+        self.calls.append("find_window")
+        return self.window if self.window_available else None
 
     def ensure_spectrum_window(self) -> tuple[SpectrumWindow, bool]:
         self.calls.append("ensure_window")
@@ -77,17 +83,25 @@ class FakeRuntimeBackend:
 class FakeHelloClient:
     def __init__(self) -> None:
         self.calls: list[tuple[int, float | None]] = []
+        self.reject_command: int | None = None
 
     def send_command(self, command: int, *, timeout: float | None = None) -> Feedback:
         self.calls.append((command, timeout))
-        return Feedback(
+        feedback = Feedback(
             command=command,
-            return_code=0,
-            error="",
+            return_code=-3001 if command == self.reject_command else 0,
+            error="rejected" if command == self.reject_command else "",
             fields=MappingProxyType(
-                {"Command": str(command), "Return": "0", "Error": ""}
+                {
+                    "Command": str(command),
+                    "Return": "-3001" if command == self.reject_command else "0",
+                    "Error": "rejected" if command == self.reject_command else "",
+                }
             ),
         )
+        if command == self.reject_command:
+            raise LabSolutionsCommandError(feedback)
+        return feedback
 
 
 class RuntimeManagerTests(unittest.TestCase):
@@ -238,6 +252,85 @@ configure_command_directory = true
                 manager.ensure_ready(allow_reconfigure=True)
 
             self.assertEqual(backend.calls, [])
+
+    def test_mode_switch_release_disconnects_before_leaving_automatic_control(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            settings = self._settings(root)
+            backend = FakeRuntimeBackend(settings.command_dir, waiting=True)
+            client = FakeHelloClient()
+            manager = LabSolutionsRuntimeManager(
+                settings,
+                backend=backend,
+                client_factory=lambda: client,  # type: ignore[arg-type]
+            )
+
+            released = manager.release_for_mode_switch()
+
+            self.assertEqual(released["state"], "RELEASED")
+            self.assertEqual(released["mode"], "spectrum")
+            self.assertEqual(client.calls, [(0, 3.0), (2, settings.timeout_seconds)])
+            self.assertIn("leave", backend.calls)
+            self.assertIsNone(backend.status)
+
+    def test_mode_switch_release_does_not_launch_a_missing_old_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            settings = self._settings(root)
+            backend = FakeRuntimeBackend(settings.command_dir, waiting=True)
+            backend.window_available = False
+            client = FakeHelloClient()
+            manager = LabSolutionsRuntimeManager(
+                settings,
+                backend=backend,
+                client_factory=lambda: client,  # type: ignore[arg-type]
+            )
+
+            with self.assertRaisesRegex(LabSolutionsRuntimeError, "not running"):
+                manager.release_for_mode_switch()
+
+            self.assertNotIn("ensure_window", backend.calls)
+            self.assertNotIn("leave", backend.calls)
+            self.assertEqual(client.calls, [])
+
+    def test_mode_switch_release_requires_automatic_control_waiting(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            settings = self._settings(root)
+            backend = FakeRuntimeBackend(settings.command_dir, waiting=False)
+            client = FakeHelloClient()
+            manager = LabSolutionsRuntimeManager(
+                settings,
+                backend=backend,
+                client_factory=lambda: client,  # type: ignore[arg-type]
+            )
+
+            with self.assertRaisesRegex(LabSolutionsRuntimeError, "not in Waiting"):
+                manager.release_for_mode_switch()
+
+            self.assertNotIn("leave", backend.calls)
+            self.assertEqual(client.calls, [])
+
+    def test_disconnect_failure_keeps_old_mode_in_automatic_control(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            settings = self._settings(root)
+            backend = FakeRuntimeBackend(settings.command_dir, waiting=True)
+            client = FakeHelloClient()
+            client.reject_command = 2
+            manager = LabSolutionsRuntimeManager(
+                settings,
+                backend=backend,
+                client_factory=lambda: client,  # type: ignore[arg-type]
+            )
+
+            with self.assertRaises(LabSolutionsCommandError):
+                manager.release_for_mode_switch()
+
+            self.assertNotIn("leave", backend.calls)
+            self.assertIsNotNone(backend.status)
 
 
 if __name__ == "__main__":

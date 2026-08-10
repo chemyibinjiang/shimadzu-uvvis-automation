@@ -24,8 +24,14 @@ from shimadzu_uvvis.runtime_manager import RuntimeReady
 
 
 class FakeSpectrumClient:
-    def __init__(self, export_dir: Path) -> None:
+    def __init__(
+        self,
+        export_dir: Path,
+        *,
+        event_log: list[object] | None = None,
+    ) -> None:
         self.export_dir = export_dir
+        self.event_log = event_log
         self.commands: list[tuple[int, dict[str, object]]] = []
         self.data_file: Path | None = None
         self.sample_id: str | None = None
@@ -42,6 +48,8 @@ class FakeSpectrumClient:
 
     def send_command(self, command: int, **parameters: object) -> Feedback:
         self.commands.append((command, dict(parameters)))
+        if self.event_log is not None:
+            self.event_log.append(("command", command))
         if command == self.fail_command:
             raise LabSolutionsTimeoutError(f"simulated timeout for command {command}")
         if command == 1 and self.already_connected:
@@ -189,15 +197,27 @@ class FakeSpectrumClient:
 
 
 class FakeRuntimeManager:
-    def __init__(self, command_dir: Path) -> None:
+    def __init__(
+        self,
+        command_dir: Path,
+        *,
+        event_log: list[object] | None = None,
+    ) -> None:
         self.command_dir = command_dir
+        self.event_log = event_log
         self.calls: list[bool] = []
+        self.release_calls = 0
         self.prompt_dismissal_calls: list[float] = []
         self.dismiss_prompt = False
         self.prompt_error: Exception | None = None
+        self.ensure_error: Exception | None = None
 
     def ensure_ready(self, *, allow_reconfigure: bool) -> RuntimeReady:
         self.calls.append(allow_reconfigure)
+        if self.event_log is not None:
+            self.event_log.append(("runtime_ready", allow_reconfigure))
+        if self.ensure_error is not None:
+            raise self.ensure_error
         return RuntimeReady(
             process_id=1234,
             window_handle=5678,
@@ -212,6 +232,16 @@ class FakeRuntimeManager:
                 fields=MappingProxyType({"Command": "0", "Return": "0", "Error": ""}),
             ),
         )
+
+    def release_for_mode_switch(self) -> dict[str, object]:
+        self.release_calls += 1
+        if self.event_log is not None:
+            self.event_log.append(("command", 2))
+        return {
+            "state": "RELEASED",
+            "mode": "spectrum",
+            "disconnect": {"command": 2, "return_code": 0},
+        }
 
     def dismiss_parameter_change_baseline_prompt(
         self, *, wait_seconds: float = 0.0
@@ -228,10 +258,15 @@ class SpectrumBatchControllerTests(unittest.TestCase):
             (root / name).mkdir()
         template = root / "templates" / "spectrum_absorbance.vspm"
         template.write_bytes(b"TEMPLATE")
+        photometric_template = root / "templates" / "photometric_absorbance.vphm"
+        photometric_template.write_bytes(b"PHOTOMETRIC TEMPLATE")
         time_course_template = root / "templates" / "time_course_absorbance.vtmm"
         time_course_template.write_bytes(b"TIME COURSE TEMPLATE")
         generated = root / "generated" / "spectrum_400_700_1nm_absorbance.vspm"
         generated.write_bytes(b"VERIFIED GENERATED METHOD")
+        (root / "generated" / "photometric_417nm_absorbance.vphm").write_bytes(
+            b"VERIFIED PHOTOMETRIC METHOD"
+        )
         (
             root / "generated" / "time_course_400nm_60s_2040s_absorbance.vtmm"
         ).write_bytes(b"VERIFIED TIME COURSE METHOD")
@@ -269,6 +304,11 @@ mode = "spectrum"
 signal_type = "absorbance"
 method_file = "{template.as_posix()}"
 
+[method_templates.photometric_absorbance]
+mode = "photometric"
+signal_type = "absorbance"
+method_file = "{photometric_template.as_posix()}"
+
 [method_templates.time_course_absorbance]
 mode = "time_course"
 signal_type = "absorbance"
@@ -281,20 +321,30 @@ directory = "{(root / "outputs").as_posix()}"
         )
         return config, generated
 
-    def _plan(self, config: Path, batch_id: str, *, baseline_policy: str = "new"):
+    def _plan(
+        self,
+        config: Path,
+        batch_id: str,
+        *,
+        baseline_policy: str = "new",
+        mode: str = "spectrum",
+    ):
+        wavelength_arguments = (
+            {"wavelengths_nm": [417]}
+            if mode == "photometric"
+            else {"start_nm": 400, "stop_nm": 700, "step_nm": 1}
+        )
         return build_uvvis_sample_batch_plan(
             load_settings(config),
             batch_id=batch_id,
-            mode="spectrum",
+            mode=mode,  # type: ignore[arg-type]
             samples=[
                 {"sample_name": "sample A", "sample_id": "sample_a"},
                 {"sample_name": "sample B", "sample_id": "sample_b"},
             ],
             reference_name="blank",
             baseline_policy=baseline_policy,  # type: ignore[arg-type]
-            start_nm=400,
-            stop_nm=700,
-            step_nm=1,
+            **wavelength_arguments,
         )
 
     def test_full_two_sample_state_flow_and_archival(self) -> None:
@@ -322,6 +372,10 @@ directory = "{(root / "outputs").as_posix()}"
             )
             self.assertEqual(corrected["state"], "WAITING_FOR_SAMPLE")
             self.assertEqual(corrected["next_sample"]["sample_id"], "001_sample_a")
+            self.assertEqual(
+                corrected["operator_instruction"]["message_zh"],
+                "请放入sample A，放好后告诉我。",
+            )
             self.assertEqual(fake.commands[-1][0], 21)
             self.assertEqual(fake.commands[-1][1]["CorrectionType"], 1)
 
@@ -340,6 +394,11 @@ directory = "{(root / "outputs").as_posix()}"
             self.assertEqual(first["state"], "WAITING_FOR_SAMPLE")
             self.assertEqual(first["completed_sample_count"], 1)
             self.assertEqual(first["next_sample"]["sample_id"], "002_sample_b")
+            self.assertTrue(first["operator_instruction"]["requires_confirmation"])
+            self.assertEqual(
+                first["operator_instruction"]["message_zh"],
+                "sample A已测量完成，请取出。请放入sample B，放好后告诉我。",
+            )
 
             completed = controller.measure_next(
                 "batch_001",
@@ -348,6 +407,11 @@ directory = "{(root / "outputs").as_posix()}"
             )
             self.assertEqual(completed["state"], "COMPLETED")
             self.assertEqual(completed["completed_sample_count"], 2)
+            self.assertFalse(completed["operator_instruction"]["requires_confirmation"])
+            self.assertEqual(
+                completed["operator_instruction"]["message_zh"],
+                "sample B已测量完成，本批次全部样品测量结束。",
+            )
             self.assertFalse(controller.active_batch_path.exists())
             self.assertEqual(
                 [item[0] for item in fake.commands],
@@ -905,6 +969,291 @@ directory = "{(root / "outputs").as_posix()}"
                 "baseline_reuse_rejected_new_connection",
                 [event["type"] for event in manifest["events"]],
             )
+
+    def test_completed_spectrum_batch_switches_to_photometric_in_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config, _ = self._fixture(root)
+            settings = load_settings(config)
+            events: list[object] = []
+            fake = FakeSpectrumClient(root / "export", event_log=events)
+            runtime = FakeRuntimeManager(root / "control", event_log=events)
+            controller = SpectrumBatchController(
+                settings,
+                client_factory=lambda: fake,  # type: ignore[arg-type]
+                runtime_manager_factory=lambda: runtime,  # type: ignore[arg-type]
+            )
+            controller.start(
+                self._plan(config, "completed_spectrum"), execution_confirmed=True
+            )
+            controller.correct_baseline(
+                "completed_spectrum", blank_loaded_confirmed=True
+            )
+            controller.measure_next(
+                "completed_spectrum",
+                sample_id="001_sample_a",
+                sample_loaded_confirmed=True,
+            )
+            completed = controller.measure_next(
+                "completed_spectrum",
+                sample_id="002_sample_b",
+                sample_loaded_confirmed=True,
+            )
+            self.assertEqual(completed["state"], "COMPLETED")
+
+            event_count_before_switch = len(events)
+            started = controller.start(
+                self._plan(
+                    config,
+                    "photometric_after_completed",
+                    mode="photometric",
+                ),
+                execution_confirmed=True,
+            )
+
+            switch_events = events[event_count_before_switch:]
+            self.assertLess(
+                switch_events.index(("command", 2)),
+                switch_events.index(("command", 1)),
+            )
+            self.assertLess(
+                switch_events.index(("command", 2)),
+                switch_events.index(("runtime_ready", True)),
+            )
+            self.assertEqual(runtime.release_calls, 1)
+            self.assertEqual(started["state"], "WAITING_FOR_BLANK")
+            manifest = json.loads(
+                (
+                    root
+                    / "data"
+                    / "photometric_after_completed"
+                    / "batch-manifest.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["mode_transition"]["from_mode"], "spectrum")
+            self.assertEqual(manifest["mode_transition"]["to_mode"], "photometric")
+            self.assertEqual(
+                manifest["mode_transition"]["source_batch_state"], "COMPLETED"
+            )
+
+    def test_aborted_batch_allows_switch_and_forces_new_baseline(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config, _ = self._fixture(root)
+            settings = load_settings(config)
+            fake = FakeSpectrumClient(root / "export")
+            runtime = FakeRuntimeManager(root / "control")
+            controller = SpectrumBatchController(
+                settings,
+                client_factory=lambda: fake,  # type: ignore[arg-type]
+                runtime_manager_factory=lambda: runtime,  # type: ignore[arg-type]
+            )
+            controller.start(
+                self._plan(config, "aborted_spectrum"), execution_confirmed=True
+            )
+            controller.abort(
+                "aborted_spectrum",
+                reason="switch mode",
+                abort_confirmed=True,
+            )
+
+            started = controller.start(
+                self._plan(
+                    config,
+                    "photometric_after_abort",
+                    mode="photometric",
+                    baseline_policy="reuse_valid",
+                ),
+                execution_confirmed=True,
+            )
+
+            self.assertEqual(runtime.release_calls, 1)
+            self.assertEqual(started["state"], "WAITING_FOR_BLANK")
+            self.assertEqual(started["baseline"]["policy"], "new")
+            self.assertEqual(
+                started["baseline"]["reuse_rejected_reason"],
+                "measurement_mode_changed",
+            )
+
+    def test_failed_or_recovery_batch_cannot_be_mode_switch_source(self) -> None:
+        for failure_kind, expected_state in (
+            ("reject", "FAILED"),
+            ("timeout", "RECOVERY_REQUIRED"),
+        ):
+            with self.subTest(failure_kind=failure_kind):
+                with tempfile.TemporaryDirectory() as temporary_directory:
+                    root = Path(temporary_directory)
+                    config, _ = self._fixture(root)
+                    settings = load_settings(config)
+                    fake = FakeSpectrumClient(root / "export")
+                    runtime = FakeRuntimeManager(root / "control")
+                    controller = SpectrumBatchController(
+                        settings,
+                        client_factory=lambda: fake,  # type: ignore[arg-type]
+                        runtime_manager_factory=lambda: runtime,  # type: ignore[arg-type]
+                    )
+                    if failure_kind == "reject":
+                        fake.reject_command = 100
+                        expected_error = LabSolutionsCommandError
+                    else:
+                        fake.fail_command = 100
+                        expected_error = LabSolutionsTimeoutError
+                    with self.assertRaises(expected_error):
+                        controller.start(
+                            self._plan(config, f"{failure_kind}_spectrum"),
+                            execution_confirmed=True,
+                        )
+                    fake.reject_command = None
+                    fake.fail_command = None
+                    controller.active_batch_path.unlink(missing_ok=True)
+
+                    with self.assertRaisesRegex(
+                        SpectrumBatchError,
+                        f"current state is '{expected_state}'",
+                    ):
+                        controller.start(
+                            self._plan(
+                                config,
+                                f"photometric_after_{failure_kind}",
+                                mode="photometric",
+                            ),
+                            execution_confirmed=True,
+                        )
+
+                    self.assertEqual(runtime.release_calls, 0)
+
+    def test_completed_same_mode_batch_reuses_baseline_without_releasing_runtime(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config, _ = self._fixture(root)
+            settings = load_settings(config)
+            fake = FakeSpectrumClient(root / "export")
+            runtime = FakeRuntimeManager(root / "control")
+            controller = SpectrumBatchController(
+                settings,
+                client_factory=lambda: fake,  # type: ignore[arg-type]
+                runtime_manager_factory=lambda: runtime,  # type: ignore[arg-type]
+            )
+            controller.start(
+                self._plan(config, "same_mode_first"), execution_confirmed=True
+            )
+            controller.correct_baseline(
+                "same_mode_first", blank_loaded_confirmed=True
+            )
+            controller.measure_next(
+                "same_mode_first",
+                sample_id="001_sample_a",
+                sample_loaded_confirmed=True,
+            )
+            completed = controller.measure_next(
+                "same_mode_first",
+                sample_id="002_sample_b",
+                sample_loaded_confirmed=True,
+            )
+            self.assertEqual(completed["state"], "COMPLETED")
+
+            started = controller.start(
+                self._plan(
+                    config,
+                    "same_mode_second",
+                    baseline_policy="reuse_valid",
+                ),
+                execution_confirmed=True,
+            )
+
+            self.assertEqual(runtime.release_calls, 0)
+            self.assertEqual(started["state"], "WAITING_FOR_SAMPLE")
+            self.assertEqual(started["baseline"]["status"], "REUSED")
+
+    def test_method_change_rejects_baseline_reuse_and_requires_new_baseline(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config, generated = self._fixture(root)
+            settings = load_settings(config)
+            fake = FakeSpectrumClient(root / "export")
+            runtime = FakeRuntimeManager(root / "control")
+            controller = SpectrumBatchController(
+                settings,
+                client_factory=lambda: fake,  # type: ignore[arg-type]
+                runtime_manager_factory=lambda: runtime,  # type: ignore[arg-type]
+            )
+            controller.start(
+                self._plan(config, "method_before_change"), execution_confirmed=True
+            )
+            controller.correct_baseline(
+                "method_before_change", blank_loaded_confirmed=True
+            )
+            controller.abort(
+                "method_before_change",
+                reason="method updated",
+                abort_confirmed=True,
+            )
+            generated.write_bytes(b"CHANGED VERIFIED METHOD")
+
+            started = controller.start(
+                self._plan(
+                    config,
+                    "method_after_change",
+                    baseline_policy="reuse_valid",
+                ),
+                execution_confirmed=True,
+            )
+
+            self.assertEqual(started["state"], "WAITING_FOR_BLANK")
+            self.assertEqual(started["baseline"]["policy"], "new")
+            self.assertEqual(
+                started["baseline"]["reuse_rejected_reason"],
+                "baseline_context_changed",
+            )
+            self.assertEqual(runtime.release_calls, 0)
+
+    def test_target_start_retry_does_not_release_previous_mode_twice(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config, _ = self._fixture(root)
+            settings = load_settings(config)
+            fake = FakeSpectrumClient(root / "export")
+            runtime = FakeRuntimeManager(root / "control")
+            controller = SpectrumBatchController(
+                settings,
+                client_factory=lambda: fake,  # type: ignore[arg-type]
+                runtime_manager_factory=lambda: runtime,  # type: ignore[arg-type]
+            )
+            controller.start(
+                self._plan(config, "retry_source"), execution_confirmed=True
+            )
+            controller.abort(
+                "retry_source", reason="switch mode", abort_confirmed=True
+            )
+            runtime.ensure_error = RuntimeError("target runtime failed")
+            target_plan = self._plan(
+                config,
+                "retry_photometric",
+                mode="photometric",
+            )
+
+            with self.assertRaisesRegex(RuntimeError, "target runtime failed"):
+                controller.start(target_plan, execution_confirmed=True)
+            runtime_record = json.loads(
+                controller.runtime_mode_path.read_text(encoding="utf-8")
+            )
+            self.assertEqual(runtime_record["automatic_control_state"], "RELEASED")
+            self.assertEqual(runtime.release_calls, 1)
+
+            runtime.ensure_error = None
+            controller.start(target_plan, execution_confirmed=True)
+
+            self.assertEqual(runtime.release_calls, 1)
+            manifest = json.loads(
+                (
+                    root / "data" / "retry_photometric" / "batch-manifest.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertTrue(manifest["mode_transition"]["release_reused"])
 
 
 class PhotometricBatchControllerTests(unittest.TestCase):

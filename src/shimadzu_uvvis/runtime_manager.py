@@ -96,6 +96,8 @@ class SpectrumWindow:
 class RuntimeUiBackend(Protocol):
     """UI boundary used by the runtime manager and replaced by fakes in tests."""
 
+    def find_spectrum_window(self) -> SpectrumWindow | None: ...
+
     def ensure_spectrum_window(self) -> tuple[SpectrumWindow, bool]: ...
 
     def waiting_status(self, window: SpectrumWindow) -> str | None: ...
@@ -518,6 +520,11 @@ class WindowsLabSolutionsUi:
         assert isinstance(window, SpectrumWindow)
         return window, True
 
+    def find_spectrum_window(self) -> SpectrumWindow | None:
+        """Return the running window for this mode without launching it."""
+
+        return self._menu_window()
+
     def waiting_status(self, window: SpectrumWindow) -> str | None:
         for top in self._automatic_control_windows(window):
             status = self._control(top, 9012, "Static")
@@ -815,6 +822,76 @@ class LabSolutionsRuntimeManager:
                     window,
                     wait_seconds=wait_seconds,
                 )
+        except FileLockTimeoutError as exc:
+            raise LabSolutionsRuntimeError(
+                "Another process is changing the LabSolutions runtime state"
+            ) from exc
+
+    def release_for_mode_switch(self) -> dict[str, object]:
+        """Disconnect and leave the current mode before another mode starts."""
+
+        if not self.settings.runtime.enabled:
+            raise LabSolutionsRuntimeError(
+                "LabSolutions runtime management is disabled; set "
+                "[runtime].enabled=true before switching measurement modes"
+            )
+        if self.settings.mode not in _MODE_APPLICATIONS:
+            raise LabSolutionsRuntimeError(
+                f"Unsupported LabSolutions runtime mode: {self.settings.mode!r}"
+            )
+        try:
+            with InterProcessFileLock(
+                self.lock_path,
+                timeout=self.settings.lock_timeout_seconds,
+                poll_interval=min(self.settings.poll_interval_seconds, 0.1),
+            ):
+                window = self.backend.find_spectrum_window()
+                if window is None:
+                    raise LabSolutionsRuntimeError(
+                        f"Cannot release {self.settings.mode}: its LabSolutions "
+                        "window is not running"
+                    )
+                status = self.backend.waiting_status(window)
+                if status is None:
+                    raise LabSolutionsRuntimeError(
+                        f"Cannot release {self.settings.mode}: Automatic Control "
+                        "is not in Waiting"
+                    )
+                waiting_status_before_release = status
+                hello = self._hello()
+                waiting_status_after_hello = self._wait_for_waiting(window)
+                client = self._client_factory()
+                disconnect = client.send_command(
+                    2,
+                    timeout=self.settings.timeout_seconds,
+                )
+                waiting_status_after_disconnect = self._wait_for_waiting(window)
+                self.backend.leave_automatic_control(window)
+                if self.backend.waiting_status(window) is not None:
+                    raise LabSolutionsRuntimeError(
+                        f"{self.settings.mode} did not leave Automatic Control"
+                    )
+                return {
+                    "state": "RELEASED",
+                    "mode": self.settings.mode,
+                    "process_id": window.process_id,
+                    "window_handle": window.handle,
+                    "waiting_status_before_release": waiting_status_before_release,
+                    "waiting_status_after_hello": waiting_status_after_hello,
+                    "waiting_status_after_disconnect": waiting_status_after_disconnect,
+                    "hello": {
+                        "command": hello.command,
+                        "return_code": hello.return_code,
+                        "error": hello.error,
+                        "fields": dict(hello.fields),
+                    },
+                    "disconnect": {
+                        "command": disconnect.command,
+                        "return_code": disconnect.return_code,
+                        "error": disconnect.error,
+                        "fields": dict(disconnect.fields),
+                    },
+                }
         except FileLockTimeoutError as exc:
             raise LabSolutionsRuntimeError(
                 "Another process is changing the LabSolutions runtime state"

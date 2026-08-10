@@ -37,6 +37,7 @@ from .storage_paths import existing_batch_directories, student_batch_directory
 _BATCH_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]+\Z")
 _WAITING_STATES = {"WAITING_FOR_BLANK", "WAITING_FOR_SAMPLE"}
 _TERMINAL_STATES = {"COMPLETED", "ABORTED", "FAILED"}
+_MODE_SWITCH_SOURCE_STATES = {"COMPLETED", "ABORTED"}
 
 
 class SpectrumBatchError(RuntimeError):
@@ -112,6 +113,7 @@ class SpectrumBatchController:
         self.controller_lock_path = self.data_dir / ".spectrum_batch_controller.lock"
         self.active_batch_path = self.data_dir / ".active_spectrum_batch.json"
         self.baseline_path = self.data_dir / ".spectrum_baseline.json"
+        self.runtime_mode_path = self.data_dir / ".uvvis_runtime_mode.json"
 
     def _default_client(self, mode: MeasurementMode) -> LabSolutionsClient:
         settings = settings_for_mode(self.settings, mode)
@@ -215,10 +217,126 @@ class SpectrumBatchController:
 
     def _write_manifest(self, manifest: dict[str, Any]) -> None:
         manifest["updated_at_utc"] = _utc_now()
+        manifest_path = self._manifest_path_for_record(manifest)
+        write_json_atomic(manifest_path, manifest)
         write_json_atomic(
-            self._manifest_path_for_record(manifest),
-            manifest,
+            self.runtime_mode_path,
+            {
+                "schema_version": 1,
+                "mode": manifest.get("mode"),
+                "batch_id": manifest.get("batch_id"),
+                "manifest_path": str(manifest_path),
+                "batch_state": manifest.get("state"),
+                "automatic_control_state": "WAITING",
+                "pending_target_mode": None,
+                "updated_at_utc": _utc_now(),
+            },
         )
+
+    def _runtime_manifest(self, record: Mapping[str, Any]) -> dict[str, Any]:
+        batch_id = self._batch_id(str(record.get("batch_id") or ""))
+        raw_path = str(record.get("manifest_path") or "").strip()
+        if not raw_path:
+            raise SpectrumBatchError("UV-Vis runtime mode record has no manifest path")
+        manifest_path = Path(raw_path).resolve()
+        try:
+            manifest_path.relative_to(self.data_dir.resolve())
+        except ValueError as exc:
+            raise SpectrumBatchError(
+                "UV-Vis runtime mode manifest is outside spectrum.data_dir"
+            ) from exc
+        if (
+            manifest_path.name != "batch-manifest.json"
+            or manifest_path.parent.name != batch_id
+        ):
+            raise SpectrumBatchError("UV-Vis runtime mode manifest path is invalid")
+        manifest = self._read_json(manifest_path)
+        if manifest.get("batch_id") != batch_id:
+            raise SpectrumBatchError(
+                "UV-Vis runtime mode record does not match its batch manifest"
+            )
+        return manifest
+
+    def _prepare_mode_transition(
+        self, target_mode: MeasurementMode
+    ) -> dict[str, Any] | None:
+        if not self.runtime_mode_path.is_file():
+            return None
+        record = self._read_json(self.runtime_mode_path)
+        previous_mode = record.get("mode")
+        if previous_mode not in {
+            "spectrum",
+            "photometric",
+            "quantitation",
+            "time_course",
+        }:
+            raise SpectrumBatchError("UV-Vis runtime mode record has an invalid mode")
+
+        automatic_control_state = record.get("automatic_control_state")
+        if automatic_control_state == "RELEASED":
+            pending_target_mode = record.get("pending_target_mode")
+            if pending_target_mode != target_mode:
+                raise SpectrumBatchError(
+                    "UV-Vis runtime was released for mode "
+                    f"{pending_target_mode!r}; finish that transition before starting "
+                    f"{target_mode!r}"
+                )
+            transition = record.get("transition")
+            if not isinstance(transition, Mapping):
+                raise SpectrumBatchError(
+                    "released UV-Vis runtime record has no transition details"
+                )
+            resumed = dict(transition)
+            resumed["release_reused"] = True
+            return resumed
+
+        if previous_mode == target_mode:
+            return None
+
+        batch_state = record.get("batch_state")
+        if batch_state not in _MODE_SWITCH_SOURCE_STATES:
+            raise SpectrumBatchError(
+                "cannot switch UV-Vis mode until the previous batch is exactly "
+                "COMPLETED or ABORTED; "
+                f"current state is {batch_state!r}"
+            )
+        previous_manifest = self._runtime_manifest(record)
+        if previous_manifest.get("mode") != previous_mode:
+            raise SpectrumBatchError(
+                "UV-Vis runtime mode does not match the previous batch manifest"
+            )
+        manifest_state = previous_manifest.get("state")
+        if (
+            manifest_state != batch_state
+            or manifest_state not in _MODE_SWITCH_SOURCE_STATES
+        ):
+            raise SpectrumBatchError(
+                "previous UV-Vis batch manifest must be exactly COMPLETED or ABORTED "
+                "before switching modes"
+            )
+
+        released_at = _utc_now()
+        release = self._runtime_manager(previous_mode).release_for_mode_switch()
+        transition = {
+            "from_mode": previous_mode,
+            "to_mode": target_mode,
+            "source_batch_id": record.get("batch_id"),
+            "source_batch_state": batch_state,
+            "released_at_utc": released_at,
+            "release": release,
+            "release_reused": False,
+        }
+        write_json_atomic(
+            self.runtime_mode_path,
+            {
+                **record,
+                "automatic_control_state": "RELEASED",
+                "pending_target_mode": target_mode,
+                "transition": transition,
+                "updated_at_utc": released_at,
+            },
+        )
+        return transition
 
     def _set_active(self, manifest: Mapping[str, Any]) -> None:
         write_json_atomic(
@@ -420,8 +538,6 @@ class SpectrumBatchController:
                 batch_id, mode, methods, batch_directory = self._validate_start_plan(
                     plan
                 )
-                runtime_manager = self._runtime_manager(mode)
-                runtime_ready = runtime_manager.ensure_ready(allow_reconfigure=True)
                 existing_directories = existing_batch_directories(
                     self.data_dir, batch_id
                 )
@@ -429,18 +545,34 @@ class SpectrumBatchController:
                     raise SpectrumBatchError(
                         f"batch directory already exists: {existing_directories[0]}"
                     )
+                mode_transition = self._prepare_mode_transition(mode)
+                runtime_manager = self._runtime_manager(mode)
+                runtime_ready = runtime_manager.ensure_ready(allow_reconfigure=True)
 
                 method_sha256s = [_sha256(method) for method in methods]
-                baseline_policy = str(plan["batch_preparation"]["policy"])
+                requested_baseline_policy = str(
+                    plan["batch_preparation"]["policy"]
+                )
+                baseline_policy = requested_baseline_policy
                 reference_name = str(plan["reference"]["name"])
                 reused_baseline: dict[str, Any] | None = None
+                baseline_reuse_rejected_reason: str | None = None
+                baseline_reuse_rejected_detail: str | None = None
+                if mode_transition is not None and baseline_policy == "reuse_valid":
+                    baseline_policy = "new"
+                    baseline_reuse_rejected_reason = "measurement_mode_changed"
                 if baseline_policy == "reuse_valid":
-                    reused_baseline = self._reusable_baseline(
-                        mode=mode,
-                        methods=methods,
-                        method_sha256s=method_sha256s,
-                        reference_name=reference_name,
-                    )
+                    try:
+                        reused_baseline = self._reusable_baseline(
+                            mode=mode,
+                            methods=methods,
+                            method_sha256s=method_sha256s,
+                            reference_name=reference_name,
+                        )
+                    except SpectrumBatchError as exc:
+                        baseline_policy = "new"
+                        baseline_reuse_rejected_reason = "baseline_context_changed"
+                        baseline_reuse_rejected_detail = str(exc)
 
                 batch_directory.mkdir(parents=True, exist_ok=False)
                 preparation: dict[str, Any] | None = None
@@ -505,6 +637,15 @@ class SpectrumBatchController:
                             "REUSED" if reused_baseline is not None else "PENDING"
                         ),
                         "record": reused_baseline,
+                        **(
+                            {
+                                "requested_policy": requested_baseline_policy,
+                                "reuse_rejected_reason": baseline_reuse_rejected_reason,
+                                "reuse_rejected_detail": baseline_reuse_rejected_detail,
+                            }
+                            if baseline_reuse_rejected_reason is not None
+                            else {}
+                        ),
                     },
                     "preparation": preparation,
                     "method_file": str(methods[0]),
@@ -515,6 +656,7 @@ class SpectrumBatchController:
                     "next_sample_index": 0,
                     "samples": samples,
                     "runtime": self._runtime_record(runtime_ready),
+                    "mode_transition": mode_transition,
                     "commands": [
                         {
                             **_feedback_record(runtime_ready.feedback),
@@ -524,6 +666,29 @@ class SpectrumBatchController:
                     "events": [
                         {"type": "batch_created", "at_utc": now},
                         {"type": "runtime_ready", "at_utc": now},
+                        *(
+                            [
+                                {
+                                    "type": "measurement_mode_switched",
+                                    "from_mode": mode_transition["from_mode"],
+                                    "to_mode": mode_transition["to_mode"],
+                                    "at_utc": now,
+                                }
+                            ]
+                            if mode_transition is not None
+                            else []
+                        ),
+                        *(
+                            [
+                                {
+                                    "type": "baseline_reuse_rejected",
+                                    "reason": baseline_reuse_rejected_reason,
+                                    "at_utc": now,
+                                }
+                            ]
+                            if baseline_reuse_rejected_reason is not None
+                            else []
+                        ),
                     ],
                     "last_error": None,
                 }
@@ -533,7 +698,10 @@ class SpectrumBatchController:
                 client = self._client(mode)
                 try:
                     with client.workflow_session():
-                        if self.settings.connect_before_run:
+                        if (
+                            self.settings.connect_before_run
+                            or mode_transition is not None
+                        ):
                             try:
                                 connect_feedback = client.send_command(1)
                             except LabSolutionsCommandError as exc:
@@ -1451,6 +1619,7 @@ class SpectrumBatchController:
         samples = manifest.get("samples", [])
         index = int(manifest.get("next_sample_index", 0))
         next_sample = samples[index] if index < len(samples) else None
+        completed_sample = samples[index - 1] if 0 < index <= len(samples) else None
         if state == "WAITING_FOR_BLANK":
             next_action = "place_blank_then_call_correct_uvvis_baseline"
         elif state == "WAITING_FOR_SAMPLE" and next_sample is not None:
@@ -1465,6 +1634,62 @@ class SpectrumBatchController:
             next_action = "fix_rejected_command_then_start_new_batch"
         else:
             next_action = "wait_for_current_operation"
+        operator_instruction: dict[str, Any] | None = None
+        if state == "WAITING_FOR_SAMPLE" and next_sample is not None:
+            next_name = str(next_sample.get("sample_name") or next_sample.get("sample_id") or "").strip()
+            completed_name = (
+                str(
+                    completed_sample.get("sample_name")
+                    or completed_sample.get("sample_id")
+                    or ""
+                ).strip()
+                if isinstance(completed_sample, Mapping)
+                else ""
+            )
+            operator_instruction = {
+                "requires_confirmation": True,
+                "completed_sample": (
+                    {
+                        "sequence_number": completed_sample.get("sequence_number"),
+                        "sample_name": completed_sample.get("sample_name"),
+                        "sample_id": completed_sample.get("sample_id"),
+                    }
+                    if isinstance(completed_sample, Mapping)
+                    else None
+                ),
+                "next_sample": {
+                    "sequence_number": next_sample.get("sequence_number"),
+                    "sample_name": next_sample.get("sample_name"),
+                    "sample_id": next_sample.get("sample_id"),
+                },
+                "message_zh": (
+                    f"{completed_name}已测量完成，请取出。请放入{next_name}，放好后告诉我。"
+                    if completed_name
+                    else f"请放入{next_name}，放好后告诉我。"
+                ),
+                "message_en": (
+                    f"{completed_name} is complete. Remove it, place {next_name}, and tell me when it is ready."
+                    if completed_name
+                    else f"Place {next_name} and tell me when it is ready."
+                ),
+            }
+        elif state == "COMPLETED" and isinstance(completed_sample, Mapping):
+            completed_name = str(
+                completed_sample.get("sample_name")
+                or completed_sample.get("sample_id")
+                or ""
+            ).strip()
+            operator_instruction = {
+                "requires_confirmation": False,
+                "completed_sample": {
+                    "sequence_number": completed_sample.get("sequence_number"),
+                    "sample_name": completed_sample.get("sample_name"),
+                    "sample_id": completed_sample.get("sample_id"),
+                },
+                "next_sample": None,
+                "message_zh": f"{completed_name}已测量完成，本批次全部样品测量结束。",
+                "message_en": f"{completed_name} is complete. All samples in this batch are finished.",
+            }
         return {
             "batch_id": manifest.get("batch_id"),
             "batch_directory": str(self._manifest_path_for_record(manifest).parent),
@@ -1476,11 +1701,13 @@ class SpectrumBatchController:
             "mode": manifest.get("mode"),
             "state": state,
             "next_action": next_action,
+            "operator_instruction": operator_instruction,
             "reference_name": manifest.get("reference_name"),
             "baseline": manifest.get("baseline"),
             "method_file": manifest.get("method_file"),
             "method_sha256": manifest.get("method_sha256"),
             "runtime": manifest.get("runtime"),
+            "mode_transition": manifest.get("mode_transition"),
             "sample_count": len(samples),
             "completed_sample_count": sum(
                 1 for sample in samples if sample.get("status") == "COMPLETED"

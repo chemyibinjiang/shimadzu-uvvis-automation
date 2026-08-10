@@ -202,8 +202,8 @@ ID，不使用 Computer Use、截图坐标，也不修改 OLE 二进制字节。
 `baseline_policy=new` 会在样品循环之前规划 `place_blank_and_confirm` 门禁和
 `Command=21, CorrectionType=1`。校正成功后，同一批次的后续样品直接复用该基线，不再要求基线
 确认。`baseline_policy=reuse_valid` 用于直接沿用当前仪器会话中同一方法、空白和参比对应的有效
-基线；该策略不设置操作员门禁，也不再次发送校正命令。方法或参比发生变化时，上层必须建立新
-批次并使用 `baseline_policy=new`。
+基线；该策略不设置操作员门禁，也不再次发送校正命令。方法、参比或测量模式发生变化时，执行器
+会拒绝复用旧基线并把本批次强制改为 `baseline_policy=new`。
 
 目标目录已存在时返回 `path_conflict`，防止覆盖旧实验。详细的目录结构和现场流程见
 [多样品顺序测量](sample-batches.md)。
@@ -297,6 +297,11 @@ Waiting/Hello 门禁。Spectrum 发送 `110/111`；Photometric 对每个最多 1
 最大吸收波长结果，复制到样品目录及仓库 `outputs`，然后才允许下一个样品。最后
 一个样品完成后进入 `COMPLETED`。
 
+状态结果同时返回 `operator_instruction`。批次仍有后续样品时，该结构明确给出刚完成的
+`completed_sample`、必须放入的 `next_sample`、本地化换样提示和
+`requires_confirmation=true`。调用方必须先向操作者报告上一样品已完成并要求取出，再等待操作者确认下一样品已放好；不得在同一轮自动调用下一次测量。最后一个样品完成时
+`requires_confirmation=false`，并明确报告整个批次已经结束。
+
 Spectrum 在 `111` 后优先直接解析 `.vspd` 的 X/Y 数据流，无法识别该结构时才等待 LabSolutions
 自动导出的 CSV。校验完整波长网格后生成标准 CSV、JSON、PNG 和最大吸收波长结果。只有原始
 `.vspd`、标准结果及 `outputs` 发布全部成功后才把样品标记为 `COMPLETED`；解析或发布失败时进入
@@ -362,10 +367,20 @@ configure_command_directory = true
 失败的 Hello 没有物理副作用，可以单独归档后重新校验。恢复标记只要不是 `Command=0`，运行时
 管理器就拒绝清理、重试或继续测量。
 
+跨模式批次启动会读取 `.uvvis_runtime_mode.json` 并再次核对上一批次的
+`batch-manifest.json`。只有上一批次严格为 `COMPLETED` 或 `ABORTED` 才允许切换；`FAILED`、
+`RECOVERY_REQUIRED` 或不一致记录都会阻止切换。切换顺序固定为：在旧模式仍处于 Automatic
+Control Waiting 时执行 `Command=0`，随后执行 `Command=2`，成功后退出旧 Automatic Control；再
+启动或定位目标模式、配置目标命令目录，并要求目标模式 `Command=0/Return=0`。只有已确认的
+`start_uvvis_batch` 才会继续向目标模式发送 `Command=1`、加载方法并进入新基线门禁。若旧模式已
+成功释放但目标模式尚未就绪，状态会保持为 `RELEASED`，同一目标模式的重试不会重复发送
+`Command=2`。
+
 ### 持久化状态
 
 ```text
 D:\AI-Tutor-Data\data\<学生账号>\<实验名称>\<会话ID>\uvvis\.batches\<batch_id>\batch-manifest.json
+D:\AI-Tutor-Data\data\.uvvis_runtime_mode.json
 ```
 
 命令执行前先写入过渡状态，成功反馈和文件归档后再推进。超时、命令失败、原始数据缺失或导出
