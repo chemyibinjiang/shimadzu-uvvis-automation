@@ -119,8 +119,11 @@ scan_speed_nm_per_min = 600.0
                     "start_uvvis_batch",
                     "correct_uvvis_baseline",
                     "measure_next_uvvis_sample",
+                    "remeasure_uvvis_sample",
                     "recover_uvvis_spectrum_result",
+                    "recover_uvvis_photometric_pre_acquisition",
                     "get_uvvis_batch_status",
+                    "restart_uvvis_batch",
                     "abort_uvvis_batch",
                 ],
             )
@@ -145,9 +148,21 @@ scan_speed_nm_per_min = 600.0
             self.assertFalse(
                 by_name["recover_uvvis_spectrum_result"].annotations.destructiveHint
             )
+            self.assertFalse(
+                by_name[
+                    "recover_uvvis_photometric_pre_acquisition"
+                ].annotations.readOnlyHint
+            )
+            self.assertFalse(
+                by_name[
+                    "recover_uvvis_photometric_pre_acquisition"
+                ].annotations.destructiveHint
+            )
             for name in (
                 "correct_uvvis_baseline",
                 "measure_next_uvvis_sample",
+                "remeasure_uvvis_sample",
+                "restart_uvvis_batch",
                 "abort_uvvis_batch",
             ):
                 self.assertFalse(by_name[name].annotations.readOnlyHint)
@@ -176,6 +191,20 @@ scan_speed_nm_per_min = 600.0
                 {"student_id", "experiment_name", "session_id"}
                 <= set(start_tool.inputSchema["required"])
             )
+            for tool_name in (
+                "correct_uvvis_baseline",
+                "measure_next_uvvis_sample",
+                "remeasure_uvvis_sample",
+                "recover_uvvis_spectrum_result",
+                "recover_uvvis_photometric_pre_acquisition",
+                "get_uvvis_batch_status",
+                "restart_uvvis_batch",
+                "abort_uvvis_batch",
+            ):
+                self.assertTrue(
+                    {"student_id", "experiment_name", "session_id"}
+                    <= set(by_name[tool_name].inputSchema["required"])
+                )
             scan_tool = tools[3]
             direction_schema = scan_tool.inputSchema["properties"]["direction"]
             self.assertIn(
@@ -199,8 +228,8 @@ scan_speed_nm_per_min = 600.0
             calls: list[str] = []
 
             class StubController:
-                def get_status(self, batch_id: str) -> dict[str, object]:
-                    calls.append(batch_id)
+                def get_status(self, batch_id: str, **identity: str) -> dict[str, object]:
+                    calls.append(f"{batch_id}:{identity['session_id']}")
                     return {
                         "batch_id": batch_id,
                         "state": "WAITING_FOR_SAMPLE",
@@ -216,11 +245,16 @@ scan_speed_nm_per_min = 600.0
             _, structured = asyncio.run(
                 server.call_tool(
                     "get_uvvis_batch_status",
-                    {"batch_id": "batch_001"},
+                    {
+                        "batch_id": "batch_001",
+                        "student_id": "stu_001",
+                        "experiment_name": "experiment A",
+                        "session_id": "sess_001",
+                    },
                 )
             )
 
-            self.assertEqual(calls, ["batch_001"])
+            self.assertEqual(calls, ["batch_001:sess_001"])
             self.assertEqual(structured["state"], "WAITING_FOR_SAMPLE")
             self.assertEqual(structured["next_sample"]["sample_id"], "001_sample_a")
 
@@ -233,8 +267,10 @@ scan_speed_nm_per_min = 600.0
             calls: list[str] = []
 
             class StubController:
-                def recover_spectrum_result(self, batch_id: str) -> dict[str, object]:
-                    calls.append(batch_id)
+                def recover_spectrum_result(
+                    self, batch_id: str, **identity: str
+                ) -> dict[str, object]:
+                    calls.append(f"{batch_id}:{identity['session_id']}")
                     return {
                         "batch_id": batch_id,
                         "state": "COMPLETED",
@@ -250,13 +286,59 @@ scan_speed_nm_per_min = 600.0
             _, structured = asyncio.run(
                 server.call_tool(
                     "recover_uvvis_spectrum_result",
-                    {"batch_id": "batch_001"},
+                    {
+                        "batch_id": "batch_001",
+                        "student_id": "stu_001",
+                        "experiment_name": "experiment A",
+                        "session_id": "sess_001",
+                    },
                 )
             )
 
-            self.assertEqual(calls, ["batch_001"])
+            self.assertEqual(calls, ["batch_001:sess_001"])
             self.assertEqual(structured["state"], "COMPLETED")
             self.assertEqual(structured["completed_sample_count"], 1)
+
+    def test_recover_photometric_pre_acquisition_mcp_tool_uses_controller(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config, _ = self._fixture(root)
+            calls: list[str] = []
+
+            class StubController:
+                def recover_photometric_pre_acquisition(
+                    self, batch_id: str, **identity: str
+                ) -> dict[str, object]:
+                    calls.append(f"{batch_id}:{identity['session_id']}")
+                    return {
+                        "batch_id": batch_id,
+                        "state": "WAITING_FOR_SAMPLE",
+                        "completed_sample_count": 2,
+                    }
+
+            stub = StubController()
+            server = create_mcp_server(
+                config,
+                batch_controller_factory=lambda settings: stub,  # type: ignore[arg-type,return-value]
+            )
+
+            _, structured = asyncio.run(
+                server.call_tool(
+                    "recover_uvvis_photometric_pre_acquisition",
+                    {
+                        "batch_id": "batch_001",
+                        "student_id": "stu_001",
+                        "experiment_name": "experiment A",
+                        "session_id": "sess_001",
+                    },
+                )
+            )
+
+            self.assertEqual(calls, ["batch_001:sess_001"])
+            self.assertEqual(structured["state"], "WAITING_FOR_SAMPLE")
+            self.assertEqual(structured["completed_sample_count"], 2)
 
     def test_generate_method_mcp_tool_passes_normalized_spectrum_request(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -456,7 +538,7 @@ scan_speed_nm_per_min = 600.0
             results_directory = (
                 root
                 / "data"
-                / "20240001"
+                / "stu_20240001"
                 / "银纳米粒子的制备与表征"
                 / "session_001"
                 / "uvvis"
@@ -469,7 +551,7 @@ scan_speed_nm_per_min = 600.0
             self.assertEqual(plan["session_id"], "session_001")
             self.assertEqual(
                 plan["storage_layout"],
-                "data/<student_account>/<experiment_name>/<session_id>/uvvis/<sample_name>",
+                "data/<student_id>/<experiment_name>/<session_id>/uvvis/<sample_name>",
             )
             paths = plan["samples"][0]["paths"]
             sample_directory = results_directory / "1号样品"
@@ -508,10 +590,13 @@ scan_speed_nm_per_min = 600.0
                 )
             )
 
-            self.assertRegex(plan["batch_id"], r"^uvvis_\d{8}_\d{6}$")
+            self.assertRegex(
+                plan["batch_id"],
+                r"^uvvis_\d{8}_\d{6}_session_001_[0-9a-f]{6}$",
+            )
             self.assertEqual(
                 Path(plan["results_directory"]).parts[-5:],
-                ("data", "20240001", "银纳米粒子的制备与表征", "session_001", "uvvis"),
+                ("data", "stu_20240001", "银纳米粒子的制备与表征", "session_001", "uvvis"),
             )
             self.assertEqual(Path(plan["batch_directory"]).name, plan["batch_id"])
 

@@ -85,11 +85,11 @@ def student_uvvis_directory(
     experiment_name: str,
     session_id: str,
 ) -> Path:
-    student_account = safe_storage_component(
-        student_id,
-        "student_id",
-        strip_student_prefix=True,
-    )
+    # Keep the gateway's canonical student directory name (for example
+    # ``stu_123456``).  Photo archives and experiment reports use this exact
+    # owner directory, so stripping the prefix here would split one session
+    # across two unrelated data trees.
+    student_account = safe_storage_component(student_id, "student_id")
     experiment_directory = safe_storage_component(
         experiment_name,
         "experiment_name",

@@ -328,6 +328,7 @@ directory = "{(root / "outputs").as_posix()}"
         *,
         baseline_policy: str = "new",
         mode: str = "spectrum",
+        owned: bool = False,
     ):
         wavelength_arguments = (
             {"wavelengths_nm": [417]}
@@ -345,7 +346,228 @@ directory = "{(root / "outputs").as_posix()}"
             reference_name="blank",
             baseline_policy=baseline_policy,  # type: ignore[arg-type]
             **wavelength_arguments,
+            **(
+                {
+                    "student_id": "stu_001",
+                    "experiment_name": "experiment A",
+                    "session_id": "sess_001",
+                }
+                if owned
+                else {}
+            ),
         )
+
+    @staticmethod
+    def _owner() -> dict[str, str]:
+        return {
+            "student_id": "stu_001",
+            "experiment_name": "experiment A",
+            "session_id": "sess_001",
+        }
+
+    def test_batch_owner_rejects_cross_session_access(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config, _ = self._fixture(root)
+            settings = load_settings(config)
+            controller = SpectrumBatchController(
+                settings,
+                client_factory=lambda: FakeSpectrumClient(root / "export"),  # type: ignore[arg-type]
+                runtime_manager_factory=lambda: FakeRuntimeManager(root / "control"),  # type: ignore[arg-type]
+            )
+            controller.start(
+                self._plan(config, "owned_batch", owned=True),
+                execution_confirmed=True,
+            )
+
+            with self.assertRaisesRegex(
+                SpectrumBatchError, "does not belong to the current"
+            ):
+                controller.get_status(
+                    "owned_batch",
+                    student_id="stu_001",
+                    experiment_name="experiment A",
+                    session_id="sess_other",
+                )
+
+    def test_remeasure_completed_sample_keeps_baseline_and_next_position(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config, _ = self._fixture(root)
+            settings = load_settings(config)
+            fake = FakeSpectrumClient(root / "export")
+            controller = SpectrumBatchController(
+                settings,
+                client_factory=lambda: fake,  # type: ignore[arg-type]
+                runtime_manager_factory=lambda: FakeRuntimeManager(root / "control"),  # type: ignore[arg-type]
+            )
+            owner = self._owner()
+            controller.start(
+                self._plan(config, "remeasure_batch", owned=True),
+                execution_confirmed=True,
+            )
+            baseline = controller.correct_baseline(
+                "remeasure_batch", blank_loaded_confirmed=True, **owner
+            )["baseline"]
+            first = controller.measure_next(
+                "remeasure_batch",
+                sample_id="001_sample_a",
+                sample_loaded_confirmed=True,
+                **owner,
+            )
+            old_result = first["samples"][0]["result"]
+
+            remeasured = controller.remeasure(
+                "remeasure_batch",
+                sample_id="001_sample_a",
+                sample_loaded_confirmed=True,
+                **owner,
+            )
+
+            self.assertEqual(remeasured["state"], "WAITING_FOR_SAMPLE")
+            self.assertEqual(remeasured["next_sample"]["sample_id"], "002_sample_b")
+            self.assertEqual(remeasured["baseline"], baseline)
+            self.assertEqual(remeasured["completed_sample_count"], 1)
+            self.assertEqual(remeasured["remeasurement"]["sample_id"], "001_sample_a")
+            self.assertEqual(remeasured["remeasurement"]["attempt_number"], 2)
+            self.assertNotEqual(
+                remeasured["samples"][0]["result"]["json_file"], ""
+            )
+            archive = Path(
+                controller._read_json(controller._manifest_path("remeasure_batch"))[
+                    "samples"
+                ][0]["remeasurement_history"][0]["archive_directory"]
+            )
+            self.assertTrue((archive / "previous-sample-record.json").is_file())
+            self.assertTrue(any(archive.rglob("result.json")))
+            self.assertTrue(Path(str(old_result["json_file"])).is_file())
+            self.assertEqual(
+                sum(command == 21 for command, _ in fake.commands),
+                1,
+                "remeasurement must retain the batch baseline",
+            )
+
+    def test_restart_batch_aborts_old_and_waits_for_new_blank(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config, _ = self._fixture(root)
+            settings = load_settings(config)
+            fake = FakeSpectrumClient(root / "export")
+            controller = SpectrumBatchController(
+                settings,
+                client_factory=lambda: fake,  # type: ignore[arg-type]
+                runtime_manager_factory=lambda: FakeRuntimeManager(root / "control"),  # type: ignore[arg-type]
+            )
+            owner = self._owner()
+            controller.start(
+                self._plan(config, "restart_old", owned=True),
+                execution_confirmed=True,
+            )
+            controller.correct_baseline(
+                "restart_old", blank_loaded_confirmed=True, **owner
+            )
+
+            restarted = controller.restart(
+                "restart_old",
+                self._plan(config, "restart_new", owned=True),
+                execution_confirmed=True,
+                **owner,
+            )
+
+            self.assertEqual(restarted["batch_id"], "restart_new")
+            self.assertEqual(restarted["state"], "WAITING_FOR_BLANK")
+            self.assertEqual(restarted["completed_sample_count"], 0)
+            self.assertEqual(restarted["restarted_from_batch_id"], "restart_old")
+            old = controller.get_status("restart_old", **owner)
+            self.assertEqual(old["state"], "ABORTED")
+            self.assertEqual(old["completed_sample_count"], 0)
+
+    def test_start_clears_orphaned_active_marker_when_manifest_is_gone(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config, _ = self._fixture(root)
+            settings = load_settings(config)
+            controller = SpectrumBatchController(
+                settings,
+                client_factory=lambda: FakeSpectrumClient(root / "export"),  # type: ignore[arg-type]
+                runtime_manager_factory=lambda: FakeRuntimeManager(root / "control"),  # type: ignore[arg-type,return-value]
+            )
+            controller.active_batch_path.parent.mkdir(parents=True, exist_ok=True)
+            controller.active_batch_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "batch_id": "orphaned_batch",
+                        "manifest_path": str(root / "data" / "orphaned_batch" / "batch-manifest.json"),
+                        "state": "WAITING_FOR_BLANK",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            controller.runtime_mode_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "batch_id": "orphaned_batch",
+                        "mode": "photometric",
+                        "batch_state": "WAITING_FOR_BLANK",
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            started = controller.start(
+                self._plan(config, "replacement_batch"), execution_confirmed=True
+            )
+
+            self.assertEqual(started["batch_id"], "replacement_batch")
+            self.assertFalse(controller.active_batch_path.read_text(encoding="utf-8") == "")
+            self.assertNotEqual(
+                json.loads(controller.active_batch_path.read_text(encoding="utf-8"))["batch_id"],
+                "orphaned_batch",
+            )
+
+    def test_new_session_supersedes_waiting_batch_for_same_student_experiment(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config, _ = self._fixture(root)
+            settings = load_settings(config)
+            controller = SpectrumBatchController(
+                settings,
+                client_factory=lambda: FakeSpectrumClient(root / "export"),  # type: ignore[arg-type]
+                runtime_manager_factory=lambda: FakeRuntimeManager(root / "control"),  # type: ignore[arg-type,return-value]
+            )
+            old_plan = self._plan(config, "old_session_batch", owned=True)
+            controller.start(old_plan, execution_confirmed=True)
+            new_plan = self._plan(config, "new_session_batch", owned=True)
+            new_plan["session_id"] = "sess_002"
+            new_plan["session_directory"] = "sess_002"
+            def replace_session_paths(value):
+                if isinstance(value, dict):
+                    for key, item in list(value.items()):
+                        value[key] = replace_session_paths(item)
+                elif isinstance(value, list):
+                    return [replace_session_paths(item) for item in value]
+                elif isinstance(value, str):
+                    return value.replace("sess_001", "sess_002")
+                return value
+            replace_session_paths(new_plan)
+            new_plan["status"] = "planned"
+            new_plan["execution_readiness"]["ready"] = True
+            new_plan["execution_readiness"]["path_conflicts"] = []
+            new_plan["execution_readiness"]["blocking_reasons"] = []
+
+            started = controller.start(new_plan, execution_confirmed=True)
+
+            self.assertEqual(started["batch_id"], "new_session_batch")
+            self.assertEqual(started["state"], "WAITING_FOR_BLANK")
+            old_status = controller.get_status(
+                "old_session_batch",
+                student_id="stu_001",
+                experiment_name="experiment A",
+                session_id="sess_001",
+            )
+            self.assertEqual(old_status["state"], "ABORTED")
 
     def test_full_two_sample_state_flow_and_archival(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
@@ -471,6 +693,50 @@ directory = "{(root / "outputs").as_posix()}"
             self.assertFalse(controller.active_batch_path.exists())
             self.assertEqual([item[0] for item in fake.commands], [100])
 
+    def test_abort_waiting_sample_preserves_completed_results_and_releases_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config, _ = self._fixture(root)
+            settings = load_settings(config)
+            fake = FakeSpectrumClient(root / "export")
+            controller = SpectrumBatchController(
+                settings,
+                client_factory=lambda: fake,  # type: ignore[arg-type]
+                runtime_manager_factory=lambda: FakeRuntimeManager(root / "control"),  # type: ignore[arg-type]
+            )
+            owner = self._owner()
+            controller.start(
+                self._plan(config, "batch_release", owned=True),
+                execution_confirmed=True,
+            )
+            controller.correct_baseline(
+                "batch_release", blank_loaded_confirmed=True, **owner
+            )
+            measured = controller.measure_next(
+                "batch_release",
+                sample_id="001_sample_a",
+                sample_loaded_confirmed=True,
+                **owner,
+            )
+            first_result = measured["samples"][0]["result"]
+
+            aborted = controller.abort(
+                "batch_release",
+                reason="student released instrument from pad",
+                abort_confirmed=True,
+                **owner,
+            )
+
+            self.assertEqual(aborted["state"], "ABORTED")
+            self.assertEqual(aborted["completed_sample_count"], 1)
+            self.assertEqual(aborted["samples"][0]["result"], first_result)
+            self.assertFalse(controller.active_batch_path.exists())
+            runtime_state = json.loads(
+                controller.runtime_mode_path.read_text(encoding="utf-8")
+            )
+            self.assertEqual(runtime_state["batch_id"], "batch_release")
+            self.assertEqual(runtime_state["batch_state"], "ABORTED")
+
     def test_nested_student_batch_can_be_reloaded_after_active_marker_is_cleared(
         self,
     ) -> None:
@@ -504,7 +770,7 @@ directory = "{(root / "outputs").as_posix()}"
             expected_directory = (
                 root
                 / "data"
-                / "20240001"
+                / "stu_20240001"
                 / "银纳米粒子的制备与表征"
                 / "session_001"
                 / "uvvis"
@@ -516,7 +782,7 @@ directory = "{(root / "outputs").as_posix()}"
             result_directory = (
                 root
                 / "data"
-                / "20240001"
+                / "stu_20240001"
                 / "银纳米粒子的制备与表征"
                 / "session_001"
                 / "uvvis"
@@ -591,7 +857,7 @@ directory = "{(root / "outputs").as_posix()}"
             sample_dir = (
                 root
                 / "data"
-                / "20240001"
+                / "stu_20240001"
                 / "Ag纳米粒子的制备及应用"
                 / "session_kinetics"
                 / "uvvis"
@@ -790,6 +1056,133 @@ directory = "{(root / "outputs").as_posix()}"
             self.assertTrue((sample_dir / "export" / "result.csv").is_file())
             self.assertTrue((sample_dir / "export" / "result.json").is_file())
             self.assertTrue((sample_dir / "plot" / "result.png").is_file())
+
+    def test_photometric_manifest_failure_before_311_recovers_without_measurement(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config, _ = self._fixture(root)
+            settings = load_settings(config)
+            fake = FakeSpectrumClient(root / "export")
+            runtime = FakeRuntimeManager(root / "control")
+            controller = SpectrumBatchController(
+                settings,
+                client_factory=lambda: fake,  # type: ignore[arg-type]
+                runtime_manager_factory=lambda: runtime,  # type: ignore[arg-type]
+            )
+            controller.start(
+                self._plan(config, "batch_photometric_recovery", mode="photometric"),
+                execution_confirmed=True,
+            )
+            controller.correct_baseline(
+                "batch_photometric_recovery", blank_loaded_confirmed=True
+            )
+
+            from shimadzu_uvvis import batch_workflow
+
+            real_write_json_atomic = batch_workflow.write_json_atomic
+            failure_injected = False
+
+            def fail_manifest_once(path: Path, payload: object) -> Path:
+                nonlocal failure_injected
+                commands = payload.get("commands", []) if isinstance(payload, dict) else []
+                if (
+                    not failure_injected
+                    and Path(path).name == "batch-manifest.json"
+                    and commands
+                    and commands[-1].get("command") == 310
+                ):
+                    failure_injected = True
+                    error = PermissionError(
+                        f"[WinError 5] access denied: temporary -> {path}"
+                    )
+                    error.winerror = 5  # type: ignore[attr-defined]
+                    raise error
+                return real_write_json_atomic(path, payload)  # type: ignore[arg-type]
+
+            with patch(
+                "shimadzu_uvvis.batch_workflow.write_json_atomic",
+                side_effect=fail_manifest_once,
+            ):
+                recovered = controller.measure_next(
+                    "batch_photometric_recovery",
+                    sample_id="001_sample_a",
+                    sample_loaded_confirmed=True,
+                )
+
+            self.assertTrue(failure_injected)
+            self.assertEqual(recovered["state"], "WAITING_FOR_SAMPLE")
+            self.assertEqual(recovered["next_sample"]["sample_id"], "001_sample_a")
+            self.assertIsNone(recovered["last_error"])
+            self.assertTrue(recovered["last_recovery"]["automatic"])
+            self.assertEqual([command for command, _ in fake.commands][-2:], [300, 310])
+            manifest = json.loads(
+                (
+                    root
+                    / "data"
+                    / "batch_photometric_recovery"
+                    / "batch-manifest.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["samples"][0]["status"], "PENDING")
+            self.assertNotIn("started_at_utc", manifest["samples"][0])
+            self.assertEqual(
+                manifest["events"][-1]["type"],
+                "photometric_pre_acquisition_auto_recovered",
+            )
+            self.assertEqual(len(manifest["recovery_history"]), 1)
+
+    def test_photometric_pre_acquisition_recovery_refuses_command_311_history(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config, _ = self._fixture(root)
+            settings = load_settings(config)
+            fake = FakeSpectrumClient(root / "export")
+            runtime = FakeRuntimeManager(root / "control")
+            controller = SpectrumBatchController(
+                settings,
+                client_factory=lambda: fake,  # type: ignore[arg-type]
+                runtime_manager_factory=lambda: runtime,  # type: ignore[arg-type]
+            )
+            controller.start(
+                self._plan(config, "batch_unsafe_recovery", mode="photometric"),
+                execution_confirmed=True,
+            )
+            controller.correct_baseline(
+                "batch_unsafe_recovery", blank_loaded_confirmed=True
+            )
+            manifest_path = root / "data" / "batch_unsafe_recovery" / "batch-manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            sample = manifest["samples"][0]
+            sample["status"] = "RECOVERY_REQUIRED"
+            sample["started_at_utc"] = "2026-08-18T10:00:00.000+00:00"
+            manifest["state"] = "RECOVERY_REQUIRED"
+            phase = "sample:001_sample_a:segment:1"
+            manifest["commands"].extend(
+                [
+                    {"command": 310, "return_code": 0, "phase": phase},
+                    {"command": 311, "return_code": 0, "phase": phase},
+                ]
+            )
+            manifest["last_error"] = {
+                "operation": "measure:001_sample_a",
+                "type": "PermissionError",
+                "message": "[WinError 5] batch-manifest.json",
+            }
+            from shimadzu_uvvis.audit import write_json_atomic
+
+            write_json_atomic(manifest_path, manifest)
+            controller._set_active(manifest)
+
+            with self.assertRaisesRegex(
+                SpectrumBatchError, "before acquisition Command 311"
+            ):
+                controller.recover_photometric_pre_acquisition(
+                    "batch_unsafe_recovery"
+                )
 
     def test_definite_command_rejection_ends_batch_without_recovery_lock(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

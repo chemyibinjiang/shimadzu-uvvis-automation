@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -364,7 +365,56 @@ class SpectrumBatchController:
                 f"batch {manifest.get('batch_id')!r} is not the active UV-Vis batch"
             )
 
-    def _ensure_no_active_batch(self) -> None:
+    @staticmethod
+    def _validate_batch_owner(
+        manifest: Mapping[str, Any],
+        *,
+        student_id: str,
+        experiment_name: str,
+        session_id: str,
+    ) -> None:
+        supplied = {
+            "student_id": student_id.strip() if isinstance(student_id, str) else "",
+            "experiment_name": (
+                experiment_name.strip() if isinstance(experiment_name, str) else ""
+            ),
+            "session_id": session_id.strip() if isinstance(session_id, str) else "",
+        }
+        missing = [name for name, value in supplied.items() if not value]
+        if missing:
+            raise SpectrumBatchError(
+                "UV-Vis batch ownership requires non-empty " + ", ".join(missing)
+            )
+        mismatches = [
+            name
+            for name, value in supplied.items()
+            if str(manifest.get(name) or "").strip() != value
+        ]
+        if mismatches:
+            raise SpectrumBatchError(
+                "UV-Vis batch does not belong to the current student experiment "
+                "session; mismatched fields: "
+                + ", ".join(mismatches)
+            )
+
+    def _validate_optional_batch_owner(
+        self,
+        manifest: Mapping[str, Any],
+        *,
+        student_id: str | None,
+        experiment_name: str | None,
+        session_id: str | None,
+    ) -> None:
+        if student_id is None and experiment_name is None and session_id is None:
+            return
+        self._validate_batch_owner(
+            manifest,
+            student_id=student_id or "",
+            experiment_name=experiment_name or "",
+            session_id=session_id or "",
+        )
+
+    def _ensure_no_active_batch(self, replacement_plan: Mapping[str, Any]) -> None:
         if not self.active_batch_path.exists():
             return
         active = self._read_json(self.active_batch_path)
@@ -373,12 +423,90 @@ class SpectrumBatchController:
             raise SpectrumBatchError(
                 f"invalid active batch marker: {self.active_batch_path}"
             )
-        manifest_path = self._manifest_path(active_id)
+        # Read the marker directly here.  _manifest_path intentionally rejects
+        # paths outside data_dir, but a stale marker can contain precisely such
+        # a path; it must be treated as missing and repaired below.
+        raw_manifest_path = str(active.get("manifest_path") or "").strip()
+        manifest_path = Path(raw_manifest_path).resolve() if raw_manifest_path else None
+        if manifest_path is not None:
+            try:
+                manifest_path.relative_to(self.data_dir.resolve())
+            except ValueError:
+                manifest_path = None
+        if manifest_path is None:
+            manifest_path = self._batch_directory(active_id) / "batch-manifest.json"
         if manifest_path.is_file():
             manifest = self._read_json(manifest_path)
             if manifest.get("state") in _TERMINAL_STATES:
                 self.active_batch_path.unlink(missing_ok=True)
                 return
+            old_identity = {
+                name: str(manifest.get(name) or "").strip()
+                for name in ("student_id", "experiment_name", "session_id")
+            }
+            new_identity = {
+                name: str(replacement_plan.get(name) or "").strip()
+                for name in ("student_id", "experiment_name", "session_id")
+            }
+            same_student_experiment = (
+                old_identity["student_id"]
+                and old_identity["student_id"] == new_identity["student_id"]
+                and old_identity["experiment_name"]
+                and old_identity["experiment_name"] == new_identity["experiment_name"]
+            )
+            is_new_session = (
+                old_identity["session_id"]
+                and new_identity["session_id"]
+                and old_identity["session_id"] != new_identity["session_id"]
+            )
+            state = str(manifest.get("state") or "")
+            if same_student_experiment and is_new_session and state in {
+                "WAITING_FOR_BLANK",
+                "WAITING_FOR_SAMPLE",
+                "RECOVERY_REQUIRED",
+            }:
+                aborted_at = _utc_now()
+                manifest["state"] = "ABORTED"
+                manifest["aborted_at_utc"] = aborted_at
+                manifest["abort_reason"] = "superseded_by_new_experiment_session"
+                manifest.setdefault("events", []).append(
+                    {
+                        "type": "batch_aborted_for_new_session",
+                        "replacement_session_id": new_identity["session_id"],
+                        "at_utc": aborted_at,
+                    }
+                )
+                self._write_manifest(manifest)
+                self._clear_active(active_id)
+                return
+        else:
+            # A crash or a manual data cleanup can leave only the global marker
+            # behind.  Do not treat that marker as a live instrument batch: first
+            # search the configured data root for a surviving manifest with the
+            # same id, and only clear the marker when no such manifest exists.
+            surviving_manifests = []
+            for candidate in self.data_dir.rglob("batch-manifest.json"):
+                try:
+                    candidate_payload = self._read_json(candidate)
+                except SpectrumBatchError:
+                    continue
+                if candidate_payload.get("batch_id") == active_id:
+                    surviving_manifests.append(candidate)
+            if not surviving_manifests:
+                self.active_batch_path.unlink(missing_ok=True)
+                if self.runtime_mode_path.is_file():
+                    try:
+                        runtime = self._read_json(self.runtime_mode_path)
+                    except SpectrumBatchError:
+                        runtime = {}
+                    if runtime.get("batch_id") == active_id:
+                        self.runtime_mode_path.unlink(missing_ok=True)
+                return
+            raise SpectrumBatchError(
+                f"UV-Vis active marker for {active_id!r} points to a missing "
+                "manifest, but a surviving manifest exists: "
+                + ", ".join(str(path) for path in surviving_manifests)
+            )
         raise SpectrumBatchError(
             f"UV-Vis batch {active_id!r} is already active; finish or abort it first"
         )
@@ -434,6 +562,78 @@ class SpectrumBatchController:
         record["phase"] = phase
         manifest["commands"].append(record)
         self._write_manifest(manifest)
+
+    def _auto_recover_photometric_pre_acquisition(
+        self,
+        *,
+        manifest: dict[str, Any],
+        sample: dict[str, Any],
+        error: Exception,
+    ) -> dict[str, Any] | None:
+        """Return to the same sample after a manifest error before Command 311."""
+
+        if manifest.get("mode") != "photometric" or not isinstance(
+            error, PermissionError
+        ):
+            return None
+        if "batch-manifest.json" not in str(error):
+            return None
+
+        sample_id = str(sample.get("sample_id") or "")
+        completed_segments = list(sample.get("completed_segments", []))
+        segment_index = len(completed_segments) + 1
+        segments = list(sample.get("segments", []))
+        if not sample_id or segment_index > len(segments):
+            return None
+        phase = f"sample:{sample_id}:segment:{segment_index}"
+        phase_commands = [
+            command
+            for command in manifest.get("commands", [])
+            if isinstance(command, Mapping) and command.get("phase") == phase
+        ]
+        if not any(
+            command.get("command") == 310 and command.get("return_code") == 0
+            for command in phase_commands
+        ):
+            return None
+        if any(
+            command.get("command") in {311, 320, 321}
+            for command in phase_commands
+        ):
+            return None
+
+        segment = segments[segment_index - 1]
+        raw_path = Path(str(segment["raw_data_file"]))
+        if raw_path.exists():
+            return None
+
+        recovered_at = _utc_now()
+        recovery = {
+            "operation": f"measure:{sample_id}",
+            "type": type(error).__name__,
+            "message": str(error),
+            "reason": "manifest_access_error_before_command_311",
+            "automatic": True,
+            "at_utc": recovered_at,
+        }
+        manifest.setdefault("recovery_history", []).append(recovery)
+        manifest["last_recovery"] = recovery
+        manifest["last_error"] = None
+        manifest["state"] = "WAITING_FOR_SAMPLE"
+        sample["status"] = "PENDING"
+        sample.pop("started_at_utc", None)
+        manifest["events"].append(
+            {
+                "type": "photometric_pre_acquisition_auto_recovered",
+                "sample_id": sample_id,
+                "segment_index": segment_index,
+                "reason": recovery["reason"],
+                "at_utc": recovered_at,
+            }
+        )
+        self._write_manifest(manifest)
+        self._set_active(manifest)
+        return self._status(manifest)
 
     def _validate_start_plan(
         self, plan: Mapping[str, Any]
@@ -534,7 +734,7 @@ class SpectrumBatchController:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         try:
             with self._lock():
-                self._ensure_no_active_batch()
+                self._ensure_no_active_batch(plan)
                 batch_id, mode, methods, batch_directory = self._validate_start_plan(
                     plan
                 )
@@ -817,6 +1017,9 @@ class SpectrumBatchController:
         batch_id: str,
         *,
         blank_loaded_confirmed: bool,
+        student_id: str | None = None,
+        experiment_name: str | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         """Run Command 21 after the operator confirms blank placement."""
 
@@ -825,6 +1028,12 @@ class SpectrumBatchController:
         try:
             with self._lock():
                 manifest = self._read_json(self._manifest_path(batch_id))
+                self._validate_optional_batch_owner(
+                    manifest,
+                    student_id=student_id,
+                    experiment_name=experiment_name,
+                    session_id=session_id,
+                )
                 self._require_active(manifest)
                 if manifest.get("state") != "WAITING_FOR_BLANK":
                     raise SpectrumBatchError(
@@ -1293,6 +1502,61 @@ class SpectrumBatchController:
             }
         )
 
+        pending_remeasurement = manifest.get("pending_remeasurement")
+        if (
+            isinstance(pending_remeasurement, Mapping)
+            and pending_remeasurement.get("sample_id") == sample_id
+        ):
+            original_state = str(
+                pending_remeasurement.get("original_state") or "WAITING_FOR_SAMPLE"
+            )
+            original_next_sample_index = int(
+                pending_remeasurement.get("original_next_sample_index", index + 1)
+            )
+            attempt_number = int(pending_remeasurement.get("attempt_number", 2))
+            completed_at = _utc_now()
+            history = sample.setdefault("remeasurement_history", [])
+            history.append(
+                {
+                    "attempt_number": attempt_number,
+                    "archive_directory": pending_remeasurement.get(
+                        "archive_directory"
+                    ),
+                    "completed_at_utc": completed_at,
+                }
+            )
+            write_json_atomic(
+                Path(str(sample["paths"]["manifest_file"])),
+                {
+                    "schema_version": 1,
+                    "batch_id": manifest["batch_id"],
+                    "method_file": manifest["method_file"],
+                    "method_sha256": manifest["method_sha256"],
+                    "method_files": manifest["method_files"],
+                    "method_sha256s": manifest["method_sha256s"],
+                    "baseline": manifest["baseline"],
+                    "sample": sample,
+                },
+            )
+            manifest["next_sample_index"] = original_next_sample_index
+            manifest["state"] = original_state
+            manifest.pop("pending_remeasurement", None)
+            manifest["last_remeasurement"] = {
+                "sample_id": sample_id,
+                "attempt_number": attempt_number,
+                "completed_at_utc": completed_at,
+            }
+            if original_state == "COMPLETED":
+                manifest["completed_at_utc"] = completed_at
+            self._write_manifest(manifest)
+            if original_state in _TERMINAL_STATES:
+                self._clear_active(str(manifest["batch_id"]))
+            else:
+                self._set_active(manifest)
+            status = self._status(manifest)
+            status["remeasurement"] = dict(manifest["last_remeasurement"])
+            return status
+
         if manifest["next_sample_index"] < len(manifest["samples"]):
             manifest["state"] = "WAITING_FOR_SAMPLE"
             self._write_manifest(manifest)
@@ -1314,6 +1578,9 @@ class SpectrumBatchController:
         *,
         sample_id: str,
         sample_loaded_confirmed: bool,
+        student_id: str | None = None,
+        experiment_name: str | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         """Measure exactly the next planned sample and archive its outputs."""
 
@@ -1322,6 +1589,12 @@ class SpectrumBatchController:
         try:
             with self._lock():
                 manifest = self._read_json(self._manifest_path(batch_id))
+                self._validate_optional_batch_owner(
+                    manifest,
+                    student_id=student_id,
+                    experiment_name=experiment_name,
+                    session_id=session_id,
+                )
                 self._require_active(manifest)
                 if manifest.get("state") != "WAITING_FOR_SAMPLE":
                     raise SpectrumBatchError(
@@ -1424,6 +1697,15 @@ class SpectrumBatchController:
                                 phase="finalize",
                             )
                 except Exception as exc:
+                    automatically_recovered = (
+                        self._auto_recover_photometric_pre_acquisition(
+                            manifest=manifest,
+                            sample=sample,
+                            error=exc,
+                        )
+                    )
+                    if automatically_recovered is not None:
+                        return automatically_recovered
                     sample["status"] = (
                         "FAILED"
                         if isinstance(exc, LabSolutionsCommandError)
@@ -1456,18 +1738,36 @@ class SpectrumBatchController:
                     sample=sample,
                     index=index,
                     sample_id=expected_id,
+                    event_type=(
+                        "sample_remeasured"
+                        if isinstance(manifest.get("pending_remeasurement"), Mapping)
+                        else "sample_completed"
+                    ),
                 )
         except FileLockTimeoutError as exc:
             raise SpectrumBatchError(
                 "another process is changing the UV-Vis batch state"
             ) from exc
 
-    def recover_spectrum_result(self, batch_id: str) -> dict[str, Any]:
+    def recover_spectrum_result(
+        self,
+        batch_id: str,
+        *,
+        student_id: str | None = None,
+        experiment_name: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
         """Complete a measured Spectrum sample from its saved .vspd without remeasure."""
 
         try:
             with self._lock():
                 manifest = self._read_json(self._manifest_path(batch_id))
+                self._validate_optional_batch_owner(
+                    manifest,
+                    student_id=student_id,
+                    experiment_name=experiment_name,
+                    session_id=session_id,
+                )
                 self._require_active(manifest)
                 if manifest.get("state") != "RECOVERY_REQUIRED":
                     raise SpectrumBatchError(
@@ -1564,12 +1864,527 @@ class SpectrumBatchController:
                 "another process is changing the UV-Vis batch state"
             ) from exc
 
+    def recover_photometric_pre_acquisition(
+        self,
+        batch_id: str,
+        *,
+        student_id: str | None = None,
+        experiment_name: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Restore a Photometric sample when persistence failed before Command 311."""
+
+        try:
+            with self._lock():
+                manifest = self._read_json(self._manifest_path(batch_id))
+                self._validate_optional_batch_owner(
+                    manifest,
+                    student_id=student_id,
+                    experiment_name=experiment_name,
+                    session_id=session_id,
+                )
+                self._require_active(manifest)
+                if manifest.get("state") != "RECOVERY_REQUIRED":
+                    raise SpectrumBatchError(
+                        "Photometric pre-acquisition recovery requires state "
+                        f"RECOVERY_REQUIRED; current state is {manifest.get('state')}"
+                    )
+                if manifest.get("mode") != "photometric":
+                    raise SpectrumBatchError(
+                        "pre-acquisition recovery is only supported for Photometric"
+                    )
+                self._validate_methods(manifest)
+
+                index = int(manifest["next_sample_index"])
+                samples = manifest["samples"]
+                if index >= len(samples):
+                    raise SpectrumBatchError("batch has no sample awaiting recovery")
+                sample = samples[index]
+                sample_id = str(sample["sample_id"])
+                if sample.get("status") != "RECOVERY_REQUIRED":
+                    raise SpectrumBatchError(
+                        "next Photometric sample is not marked RECOVERY_REQUIRED"
+                    )
+
+                last_error = manifest.get("last_error")
+                error_message = (
+                    str(last_error.get("message", ""))
+                    if isinstance(last_error, Mapping)
+                    else ""
+                )
+                if (
+                    not isinstance(last_error, Mapping)
+                    or last_error.get("operation") != f"measure:{sample_id}"
+                    or last_error.get("type") != "PermissionError"
+                    or "batch-manifest.json" not in error_message
+                ):
+                    raise SpectrumBatchError(
+                        "pre-acquisition recovery is allowed only after a Photometric "
+                        "batch-manifest access error"
+                    )
+
+                segments = list(sample.get("segments", []))
+                completed_segments = list(sample.get("completed_segments", []))
+                segment_index = len(completed_segments) + 1
+                if not segments or segment_index > len(segments):
+                    raise SpectrumBatchError(
+                        "Photometric sample has no unmeasured segment to recover"
+                    )
+                if any(
+                    record.get("segment_index") != position
+                    for position, record in enumerate(completed_segments, start=1)
+                ):
+                    raise SpectrumBatchError(
+                        "completed Photometric segment records are invalid"
+                    )
+
+                phase = f"sample:{sample_id}:segment:{segment_index}"
+                phase_commands = [
+                    command
+                    for command in manifest.get("commands", [])
+                    if isinstance(command, Mapping) and command.get("phase") == phase
+                ]
+                successful_310 = any(
+                    command.get("command") == 310
+                    and command.get("return_code") == 0
+                    for command in phase_commands
+                )
+                acquisition_was_sent = any(
+                    command.get("command") in {311, 320, 321}
+                    for command in phase_commands
+                )
+                if not successful_310 or acquisition_was_sent:
+                    raise SpectrumBatchError(
+                        "cannot prove the Photometric failure occurred after Command "
+                        "310 and before acquisition Command 311"
+                    )
+
+                segment = segments[segment_index - 1]
+                raw_path = Path(str(segment["raw_data_file"]))
+                result_paths = [
+                    raw_path,
+                    Path(str(sample["paths"]["merged_csv_file"])),
+                    Path(str(sample["paths"]["result_json_file"])),
+                    Path(str(sample["paths"]["plot_file"])),
+                    Path(str(sample["paths"]["manifest_file"])),
+                ]
+                segment_csv = (
+                    Path(str(sample["paths"]["export_directory"]))
+                    / f"{segment['sample_id']}.csv"
+                )
+                result_paths.append(segment_csv)
+                existing_results = [path for path in result_paths if path.exists()]
+                if existing_results or any(
+                    sample.get(key) is not None
+                    for key in ("raw_data", "export", "result")
+                ):
+                    raise SpectrumBatchError(
+                        "Photometric sample has acquisition artifacts; refusing "
+                        "pre-acquisition recovery: "
+                        + ", ".join(str(path) for path in existing_results)
+                    )
+
+                recovered_at = _utc_now()
+                manifest.setdefault("recovery_history", []).append(dict(last_error))
+                manifest["last_recovery"] = {
+                    **dict(last_error),
+                    "reason": "manifest_access_error_before_command_311",
+                    "automatic": False,
+                    "recovered_at_utc": recovered_at,
+                }
+                manifest["last_error"] = None
+                manifest["state"] = "WAITING_FOR_SAMPLE"
+                sample["status"] = "PENDING"
+                sample.pop("started_at_utc", None)
+                manifest["events"].append(
+                    {
+                        "type": "photometric_pre_acquisition_recovered",
+                        "sample_id": sample_id,
+                        "segment_index": segment_index,
+                        "reason": "manifest_access_error_before_command_311",
+                        "at_utc": recovered_at,
+                    }
+                )
+                self._write_manifest(manifest)
+                self._set_active(manifest)
+                return self._status(manifest)
+        except FileLockTimeoutError as exc:
+            raise SpectrumBatchError(
+                "another process is changing the UV-Vis batch state"
+            ) from exc
+
+    def _archive_sample_for_remeasurement(
+        self,
+        *,
+        manifest: dict[str, Any],
+        sample: dict[str, Any],
+        attempt_number: int,
+    ) -> Path:
+        sample_directory = Path(str(sample["paths"]["sample_directory"])).resolve()
+        archive_directory = (
+            sample_directory
+            / "remeasurements"
+            / f"attempt_{attempt_number:02d}_previous"
+        )
+        if archive_directory.exists():
+            raise SpectrumBatchError(
+                f"remeasurement archive already exists: {archive_directory}"
+            )
+
+        paths: set[Path] = set()
+        sample_paths = sample.get("paths")
+        if isinstance(sample_paths, Mapping):
+            for key in (
+                "raw_data_file",
+                "merged_csv_file",
+                "result_json_file",
+                "plot_file",
+                "manifest_file",
+            ):
+                value = sample_paths.get(key)
+                if value:
+                    paths.add(Path(str(value)).resolve())
+            raw_files = sample_paths.get("raw_data_files")
+            for value in raw_files if isinstance(raw_files, list) else []:
+                paths.add(Path(str(value)).resolve())
+            export_directory = sample_paths.get("export_directory")
+            if export_directory:
+                export_path = Path(str(export_directory)).resolve()
+                if export_path.is_dir():
+                    paths.update(path.resolve() for path in export_path.rglob("*") if path.is_file())
+
+        result = sample.get("result")
+        published = result.get("published") if isinstance(result, Mapping) else None
+        if isinstance(published, Mapping):
+            for value in published.values():
+                if value:
+                    paths.add(Path(str(value)).resolve())
+
+        archive_directory.mkdir(parents=True, exist_ok=False)
+        write_json_atomic(
+            archive_directory / "previous-sample-record.json",
+            {
+                "schema_version": 1,
+                "batch_id": manifest.get("batch_id"),
+                "sample": sample,
+                "archived_at_utc": _utc_now(),
+            },
+        )
+        for source in sorted(paths, key=lambda path: str(path).lower()):
+            if not source.is_file():
+                continue
+            try:
+                relative = source.relative_to(sample_directory)
+                if relative.parts and relative.parts[0] == "remeasurements":
+                    continue
+                destination = archive_directory / "sample" / relative
+            except ValueError:
+                destination = archive_directory / "published" / source.name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists():
+                raise SpectrumBatchError(
+                    f"duplicate artifact in remeasurement archive: {destination}"
+                )
+            try:
+                os.replace(source, destination)
+            except OSError:
+                shutil.copy2(source, destination)
+                source.unlink()
+        return archive_directory
+
+    def remeasure(
+        self,
+        batch_id: str,
+        *,
+        sample_id: str,
+        sample_loaded_confirmed: bool,
+        student_id: str,
+        experiment_name: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        """Remeasure one completed sample while retaining the batch baseline."""
+
+        if sample_loaded_confirmed is not True:
+            raise SpectrumBatchError("sample_loaded_confirmed must be true")
+        try:
+            with self._lock():
+                manifest = self._read_json(self._manifest_path(batch_id))
+                self._validate_batch_owner(
+                    manifest,
+                    student_id=student_id,
+                    experiment_name=experiment_name,
+                    session_id=session_id,
+                )
+                state = str(manifest.get("state") or "")
+                if state not in {"WAITING_FOR_SAMPLE", "COMPLETED"}:
+                    raise SpectrumBatchError(
+                        "sample remeasurement requires a stable waiting or completed "
+                        f"batch; current state is {state}"
+                    )
+                if state == "WAITING_FOR_SAMPLE":
+                    self._require_active(manifest)
+                if isinstance(manifest.get("pending_remeasurement"), Mapping):
+                    raise SpectrumBatchError(
+                        "the batch already has a pending sample remeasurement"
+                    )
+
+                samples = manifest.get("samples")
+                if not isinstance(samples, list):
+                    raise SpectrumBatchError("batch sample records are invalid")
+                matches = [
+                    (index, sample)
+                    for index, sample in enumerate(samples)
+                    if isinstance(sample, dict) and sample.get("sample_id") == sample_id
+                ]
+                if len(matches) != 1:
+                    raise SpectrumBatchError(
+                        f"batch does not contain exactly one sample {sample_id!r}"
+                    )
+                index, sample = matches[0]
+                if sample.get("status") != "COMPLETED":
+                    raise SpectrumBatchError(
+                        f"sample {sample_id!r} is not completed and cannot be remeasured"
+                    )
+
+                attempt_number = int(sample.get("measurement_attempt", 1)) + 1
+                reconstructed_segments: list[dict[str, Any]] | None = None
+                if manifest.get("mode") == "photometric":
+                    old_segments = list(sample.get("segments", []))
+                    raw_files = list(sample.get("paths", {}).get("raw_data_files", []))
+                    if len(old_segments) != len(raw_files):
+                        raise SpectrumBatchError(
+                            "Photometric remeasurement cannot reconstruct planned segments"
+                        )
+                    reconstructed_segments = [
+                        {
+                            "segment_index": segment.get("segment_index", position),
+                            "sample_id": segment.get("sample_id"),
+                            "wavelengths_nm": segment.get("wavelengths_nm"),
+                            "raw_data_file": raw_files[position - 1],
+                        }
+                        for position, segment in enumerate(old_segments, start=1)
+                    ]
+                archive_directory = self._archive_sample_for_remeasurement(
+                    manifest=manifest,
+                    sample=sample,
+                    attempt_number=attempt_number,
+                )
+                if reconstructed_segments is not None:
+                    sample["segments"] = reconstructed_segments
+                for key in (
+                    "raw_data",
+                    "export",
+                    "export_source",
+                    "result",
+                    "completed_segments",
+                    "started_at_utc",
+                    "completed_at_utc",
+                ):
+                    sample.pop(key, None)
+                sample["status"] = "PENDING"
+                sample["measurement_attempt"] = attempt_number
+
+                manifest["pending_remeasurement"] = {
+                    "sample_id": sample_id,
+                    "attempt_number": attempt_number,
+                    "archive_directory": str(archive_directory),
+                    "original_state": state,
+                    "original_next_sample_index": int(
+                        manifest.get("next_sample_index", len(samples))
+                    ),
+                    "requested_at_utc": _utc_now(),
+                }
+                manifest["next_sample_index"] = index
+                manifest["state"] = "WAITING_FOR_SAMPLE"
+                manifest["events"].append(
+                    {
+                        "type": "sample_remeasurement_requested",
+                        "sample_id": sample_id,
+                        "attempt_number": attempt_number,
+                        "at_utc": _utc_now(),
+                    }
+                )
+                self._write_manifest(manifest)
+                self._set_active(manifest)
+        except FileLockTimeoutError as exc:
+            raise SpectrumBatchError(
+                "another process is changing the UV-Vis batch state"
+            ) from exc
+
+        return self.measure_next(
+            batch_id,
+            sample_id=sample_id,
+            sample_loaded_confirmed=True,
+            student_id=student_id,
+            experiment_name=experiment_name,
+            session_id=session_id,
+        )
+
+    def restart(
+        self,
+        batch_id: str,
+        plan: Mapping[str, Any],
+        *,
+        execution_confirmed: bool,
+        student_id: str,
+        experiment_name: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        """Close a stable old batch and start a fresh batch with a new baseline."""
+
+        restart_plan = copy.deepcopy(dict(plan))
+        new_batch_id = self._batch_id(str(restart_plan.get("batch_id") or ""))
+        if new_batch_id == self._batch_id(batch_id):
+            raise SpectrumBatchError("restart requires a new batch_id")
+        preparation = restart_plan.get("batch_preparation")
+        if not isinstance(preparation, Mapping) or preparation.get("policy") != "new":
+            raise SpectrumBatchError("restart requires baseline_policy='new'")
+        for name, supplied in (
+            ("student_id", student_id),
+            ("experiment_name", experiment_name),
+            ("session_id", session_id),
+        ):
+            if str(restart_plan.get(name) or "").strip() != str(supplied or "").strip():
+                raise SpectrumBatchError(
+                    f"restart plan {name} does not match the current session"
+                )
+
+        readiness = restart_plan.get("execution_readiness")
+        path_conflicts = (
+            readiness.get("path_conflicts")
+            if isinstance(readiness, Mapping)
+            else None
+        )
+        if isinstance(path_conflicts, list) and path_conflicts:
+            batch_directory = Path(str(restart_plan["batch_directory"]))
+            for sample in restart_plan.get("samples", []):
+                if not isinstance(sample, dict):
+                    continue
+                sample_id = str(sample.get("sample_id") or "")
+                sample_directory = batch_directory / sample_id
+                raw_directory = sample_directory / "raw"
+                export_directory = sample_directory / "export"
+                plot_directory = sample_directory / "plot"
+                segments = sample.get("segments")
+                segments = segments if isinstance(segments, list) else []
+                for segment in segments:
+                    if not isinstance(segment, dict):
+                        continue
+                    original = Path(str(segment.get("raw_data_file") or ""))
+                    segment["raw_data_file"] = str(raw_directory / original.name)
+                raw_files = [
+                    str(segment["raw_data_file"])
+                    for segment in segments
+                    if isinstance(segment, dict) and segment.get("raw_data_file")
+                ]
+                sample["paths"] = {
+                    "sample_directory": str(sample_directory),
+                    "raw_directory": str(raw_directory),
+                    "raw_data_file": raw_files[0] if raw_files else "",
+                    "raw_data_files": raw_files,
+                    "export_directory": str(export_directory),
+                    "plot_directory": str(plot_directory),
+                    "plot_file": str(plot_directory / "result.png"),
+                    "merged_csv_file": str(export_directory / "result.csv"),
+                    "result_json_file": str(export_directory / "result.json"),
+                    "manifest_file": str(sample_directory / "manifest.json"),
+                }
+                run_inputs = sample.get("labsolutions_run_inputs")
+                if isinstance(run_inputs, dict) and raw_files:
+                    run_inputs["data_file"] = raw_files[0]
+            measurement_readiness = restart_plan.get("measurement_plan", {}).get(
+                "execution_readiness", {}
+            )
+            measurement_ready = (
+                isinstance(measurement_readiness, Mapping)
+                and measurement_readiness.get("ready") is True
+            )
+            restart_plan["status"] = (
+                "planned" if measurement_ready else restart_plan.get("status")
+            )
+            restart_plan["execution_readiness"] = {
+                "ready": measurement_ready,
+                "checks": {
+                    "measurement_plan_ready": measurement_ready,
+                    "batch_and_sample_directories_are_new": True,
+                },
+                "blocking_reasons": (
+                    [] if measurement_ready else ["measurement_plan_ready"]
+                ),
+                "path_conflicts": [],
+                "note": "Restart results use the replacement batch directory.",
+            }
+
+        try:
+            with self._lock():
+                manifest = self._read_json(self._manifest_path(batch_id))
+                self._validate_batch_owner(
+                    manifest,
+                    student_id=student_id,
+                    experiment_name=experiment_name,
+                    session_id=session_id,
+                )
+                state = str(manifest.get("state") or "")
+                if state in {
+                    "STARTING",
+                    "BASELINE_CORRECTING",
+                    "MEASURING_SAMPLE",
+                    "FINALIZING",
+                }:
+                    raise SpectrumBatchError(
+                        "cannot restart while an instrument command is in flight; "
+                        f"current state is {state}"
+                    )
+                if state not in _TERMINAL_STATES:
+                    self._require_active(manifest)
+                    manifest["state"] = "ABORTED"
+                    manifest["aborted_at_utc"] = _utc_now()
+                    manifest["abort_reason"] = "superseded_by_batch_restart"
+                    manifest["events"].append(
+                        {
+                            "type": "batch_aborted_for_restart",
+                            "replacement_batch_id": new_batch_id,
+                            "at_utc": manifest["aborted_at_utc"],
+                        }
+                    )
+                    self._write_manifest(manifest)
+                    self._clear_active(str(manifest["batch_id"]))
+        except FileLockTimeoutError as exc:
+            raise SpectrumBatchError(
+                "another process is changing the UV-Vis batch state"
+            ) from exc
+
+        restarted = self.start(restart_plan, execution_confirmed=execution_confirmed)
+        try:
+            with self._lock():
+                new_manifest = self._read_json(self._manifest_path(new_batch_id))
+                new_manifest["restarted_from_batch_id"] = batch_id
+                new_manifest["events"].append(
+                    {
+                        "type": "batch_restarted",
+                        "source_batch_id": batch_id,
+                        "at_utc": _utc_now(),
+                    }
+                )
+                self._write_manifest(new_manifest)
+                self._set_active(new_manifest)
+                restarted = self._status(new_manifest)
+        except FileLockTimeoutError as exc:
+            raise SpectrumBatchError(
+                "new batch started but restart linkage could not be persisted"
+            ) from exc
+        restarted["restarted_from_batch_id"] = batch_id
+        return restarted
+
     def abort(
         self,
         batch_id: str,
         *,
         reason: str,
         abort_confirmed: bool,
+        student_id: str | None = None,
+        experiment_name: str | None = None,
+        session_id: str | None = None,
     ) -> dict[str, Any]:
         """Stop future batch actions while no LabSolutions command is running."""
 
@@ -1585,6 +2400,12 @@ class SpectrumBatchController:
         try:
             with self._lock():
                 manifest = self._read_json(self._manifest_path(batch_id))
+                self._validate_optional_batch_owner(
+                    manifest,
+                    student_id=student_id,
+                    experiment_name=experiment_name,
+                    session_id=session_id,
+                )
                 state = str(manifest.get("state"))
                 if state == "ABORTED":
                     return self._status(manifest)
@@ -1734,12 +2555,26 @@ class SpectrumBatchController:
                 for sample in samples
             ],
             "last_error": manifest.get("last_error"),
+            "last_recovery": manifest.get("last_recovery"),
             "manifest_path": str(self._manifest_path_for_record(manifest)),
             "updated_at_utc": manifest.get("updated_at_utc"),
         }
 
-    def get_status(self, batch_id: str) -> dict[str, Any]:
+    def get_status(
+        self,
+        batch_id: str,
+        *,
+        student_id: str | None = None,
+        experiment_name: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
         """Read one atomically persisted batch status without changing files."""
 
         manifest = self._read_json(self._manifest_path(batch_id))
+        self._validate_optional_batch_owner(
+            manifest,
+            student_id=student_id,
+            experiment_name=experiment_name,
+            session_id=session_id,
+        )
         return self._status(manifest)

@@ -4,14 +4,36 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
 
 
+_ATOMIC_REPLACE_DELAYS_SECONDS = (0.05, 0.1, 0.2, 0.4, 0.8)
+_TRANSIENT_WINDOWS_REPLACE_ERRORS = {5, 32, 33}
+
+
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _replace_with_retry(source: Path, destination: Path) -> None:
+    for attempt, delay_seconds in enumerate(
+        (*_ATOMIC_REPLACE_DELAYS_SECONDS, None)
+    ):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError as exc:
+            winerror = getattr(exc, "winerror", None)
+            if (
+                attempt >= len(_ATOMIC_REPLACE_DELAYS_SECONDS)
+                or (winerror is not None and winerror not in _TRANSIENT_WINDOWS_REPLACE_ERRORS)
+            ):
+                raise
+            time.sleep(delay_seconds)
 
 
 def write_json_atomic(path: str | Path, payload: Mapping[str, Any]) -> Path:
@@ -26,7 +48,7 @@ def write_json_atomic(path: str | Path, payload: Mapping[str, Any]) -> Path:
             encoding="utf-8",
             newline="",
         )
-        os.replace(temporary, destination)
+        _replace_with_retry(temporary, destination)
     finally:
         temporary.unlink(missing_ok=True)
     return destination

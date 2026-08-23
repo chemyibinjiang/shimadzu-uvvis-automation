@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import os
 import re
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal, Mapping, TypedDict
@@ -33,6 +34,7 @@ from .storage_paths import (
     student_batch_directory,
     student_uvvis_directory,
 )
+from .instrument_lock import guard_physical_action
 
 
 CONFIG_ENVIRONMENT_VARIABLE = "SHIMADZU_UVVIS_CONFIG"
@@ -68,6 +70,13 @@ def _sample_name(value: object, index: int) -> str:
 
 def _beijing_batch_id() -> str:
     return datetime.now(BEIJING_TIMEZONE).strftime("uvvis_%Y%m%d_%H%M%S")
+
+
+def _session_batch_id(session_id: str) -> str:
+    """Generate a globally unique id that remains visibly tied to one session."""
+
+    session_component = _batch_identifier(session_id, "session_id")
+    return f"{_beijing_batch_id()}_{session_component}_{uuid.uuid4().hex[:6]}"
 
 
 def _file_sha256(path: Path) -> str | None:
@@ -715,7 +724,7 @@ def build_uvvis_sample_batch_plan(
         "batch_directory": str(batch_directory),
         "results_directory": str(results_directory),
         "storage_layout": (
-            "data/<student_account>/<experiment_name>/<session_id>/uvvis/<sample_name>"
+            "data/<student_id>/<experiment_name>/<session_id>/uvvis/<sample_name>"
             if student_account
             else "data/<batch_id>"
         ),
@@ -826,6 +835,13 @@ def create_mcp_server(
         if method_manager_factory is not None:
             return method_manager_factory(settings)
         return UVVisMethodManager(settings)
+
+    def guard_instrument(student_id: str, session_id: str, batch_id: str = "") -> None:
+        guard_physical_action(
+            student_id=student_id,
+            session_id=session_id,
+            batch_id=batch_id,
+        )
 
     @server.tool(
         name="plan_uvvis_measurement",
@@ -977,7 +993,7 @@ def create_mcp_server(
         settings = load_settings(resolved_config)
         return build_uvvis_sample_batch_plan(
             settings,
-            batch_id=batch_id or _beijing_batch_id(),
+            batch_id=batch_id or _session_batch_id(session_id),
             mode=mode,
             measurement_purpose=measurement_purpose,
             samples=samples,
@@ -1072,6 +1088,7 @@ def create_mcp_server(
     ) -> dict[str, Any]:
         """Start one persisted manual sample batch from an exact method."""
 
+        guard_instrument(student_id, session_id, batch_id)
         settings = load_settings(resolved_config)
         plan = build_uvvis_sample_batch_plan(
             settings,
@@ -1119,13 +1136,20 @@ def create_mcp_server(
     def correct_uvvis_baseline(
         batch_id: str,
         blank_loaded_confirmed: bool,
+        student_id: str,
+        experiment_name: str,
+        session_id: str,
     ) -> dict[str, Any]:
         """Correct the active UV-Vis batch baseline exactly once."""
 
+        guard_instrument(student_id, session_id, batch_id)
         settings = load_settings(resolved_config)
         return batch_controller(settings).correct_baseline(
             batch_id,
             blank_loaded_confirmed=blank_loaded_confirmed,
+            student_id=student_id,
+            experiment_name=experiment_name,
+            session_id=session_id,
         )
 
     @server.tool(
@@ -1150,14 +1174,59 @@ def create_mcp_server(
         batch_id: str,
         sample_id: str,
         sample_loaded_confirmed: bool,
+        student_id: str,
+        experiment_name: str,
+        session_id: str,
     ) -> dict[str, Any]:
         """Measure and archive the exact next sample in an active batch."""
 
+        guard_instrument(student_id, session_id, batch_id)
         settings = load_settings(resolved_config)
         return batch_controller(settings).measure_next(
             batch_id,
             sample_id=sample_id,
             sample_loaded_confirmed=sample_loaded_confirmed,
+            student_id=student_id,
+            experiment_name=experiment_name,
+            session_id=session_id,
+        )
+
+    @server.tool(
+        name="remeasure_uvvis_sample",
+        title="Remeasure a completed UV-Vis sample",
+        description=(
+            "Remeasure one completed sample in the same batch while retaining the "
+            "validated batch baseline. The old sample artifacts are archived, the "
+            "new result replaces the active CSV, JSON, PNG, and absorbance records, "
+            "and the batch then returns to its prior sample position."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=True,
+            idempotentHint=False,
+            openWorldHint=False,
+        ),
+        structured_output=True,
+    )
+    def remeasure_uvvis_sample(
+        batch_id: str,
+        sample_id: str,
+        sample_loaded_confirmed: bool,
+        student_id: str,
+        experiment_name: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        """Replace one completed sample result without repeating the baseline."""
+
+        guard_instrument(student_id, session_id, batch_id)
+        settings = load_settings(resolved_config)
+        return batch_controller(settings).remeasure(
+            batch_id,
+            sample_id=sample_id,
+            sample_loaded_confirmed=sample_loaded_confirmed,
+            student_id=student_id,
+            experiment_name=experiment_name,
+            session_id=session_id,
         )
 
     @server.tool(
@@ -1177,11 +1246,54 @@ def create_mcp_server(
         ),
         structured_output=True,
     )
-    def recover_uvvis_spectrum_result(batch_id: str) -> dict[str, Any]:
+    def recover_uvvis_spectrum_result(
+        batch_id: str,
+        student_id: str,
+        experiment_name: str,
+        session_id: str,
+    ) -> dict[str, Any]:
         """Recover and publish a measured Spectrum result without remeasurement."""
 
         settings = load_settings(resolved_config)
-        return batch_controller(settings).recover_spectrum_result(batch_id)
+        return batch_controller(settings).recover_spectrum_result(
+            batch_id,
+            student_id=student_id,
+            experiment_name=experiment_name,
+            session_id=session_id,
+        )
+
+    @server.tool(
+        name="recover_uvvis_photometric_pre_acquisition",
+        title="Recover Photometric pre-acquisition state",
+        description=(
+            "Restore a Photometric batch to waiting for the same sample only when "
+            "batch-manifest persistence failed after Command 310 and before "
+            "acquisition Command 311. The tool refuses recovery if any acquisition "
+            "command or result artifact exists, and it sends no instrument command."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+            openWorldHint=False,
+        ),
+        structured_output=True,
+    )
+    def recover_uvvis_photometric_pre_acquisition(
+        batch_id: str,
+        student_id: str,
+        experiment_name: str,
+        session_id: str,
+    ) -> dict[str, Any]:
+        """Restore a proven unmeasured Photometric sample to its waiting state."""
+
+        settings = load_settings(resolved_config)
+        return batch_controller(settings).recover_photometric_pre_acquisition(
+            batch_id,
+            student_id=student_id,
+            experiment_name=experiment_name,
+            session_id=session_id,
+        )
 
     @server.tool(
         name="get_uvvis_batch_status",
@@ -1199,11 +1311,98 @@ def create_mcp_server(
         ),
         structured_output=True,
     )
-    def get_uvvis_batch_status(batch_id: str) -> dict[str, Any]:
+    def get_uvvis_batch_status(
+        batch_id: str,
+        student_id: str,
+        experiment_name: str,
+        session_id: str,
+    ) -> dict[str, Any]:
         """Read one UV-Vis batch manifest without changing it."""
 
         settings = load_settings(resolved_config)
-        return batch_controller(settings).get_status(batch_id)
+        return batch_controller(settings).get_status(
+            batch_id,
+            student_id=student_id,
+            experiment_name=experiment_name,
+            session_id=session_id,
+        )
+
+    @server.tool(
+        name="restart_uvvis_batch",
+        title="Restart UV-Vis sample batch",
+        description=(
+            "Safely close a stable waiting, failed, aborted, or completed batch and "
+            "start a new batch for the same student experiment session. A new batch "
+            "identifier is always used and the replacement starts in "
+            "WAITING_FOR_BLANK with a mandatory new baseline. No manual LabSolutions "
+            "termination is required while no command is in flight."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=True,
+            idempotentHint=False,
+            openWorldHint=False,
+        ),
+        structured_output=True,
+    )
+    def restart_uvvis_batch(
+        batch_id: str,
+        samples: list[SampleBatchItem],
+        reference_name: str,
+        execution_confirmed: bool,
+        student_id: str,
+        experiment_name: str,
+        session_id: str,
+        mode: PlanningMode = "auto",
+        signal_type: str = "absorbance",
+        template_name: str | None = None,
+        start_nm: float | None = None,
+        stop_nm: float | None = None,
+        step_nm: float | None = None,
+        direction: ScanDirection | None = None,
+        wavelength_nm: float | None = None,
+        wavelengths_nm: list[float] | None = None,
+        interval_seconds: float | None = None,
+        duration_seconds: float | None = None,
+        new_batch_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Start a clean replacement batch and require a new baseline."""
+
+        guard_instrument(student_id, session_id, batch_id)
+        settings = load_settings(resolved_config)
+        # Keep replacement batches session-scoped as well as unique.  This
+        # prevents a model-supplied or timestamp-only id from being reused by
+        # another student session and makes ownership visible in the manifest.
+        replacement_batch_id = new_batch_id or _session_batch_id(session_id)
+        plan = build_uvvis_sample_batch_plan(
+            settings,
+            batch_id=replacement_batch_id,
+            mode=mode,
+            samples=samples,
+            reference_name=reference_name,
+            baseline_policy="new",
+            signal_type=signal_type,
+            template_name=template_name,
+            start_nm=start_nm,
+            stop_nm=stop_nm,
+            step_nm=step_nm,
+            direction=direction,
+            wavelength_nm=wavelength_nm,
+            wavelengths_nm=wavelengths_nm,
+            interval_seconds=interval_seconds,
+            duration_seconds=duration_seconds,
+            student_id=student_id,
+            experiment_name=experiment_name,
+            session_id=session_id,
+        )
+        return batch_controller(settings).restart(
+            batch_id,
+            plan,
+            execution_confirmed=execution_confirmed,
+            student_id=student_id,
+            experiment_name=experiment_name,
+            session_id=session_id,
+        )
 
     @server.tool(
         name="abort_uvvis_batch",
@@ -1226,14 +1425,21 @@ def create_mcp_server(
         batch_id: str,
         reason: str,
         abort_confirmed: bool,
+        student_id: str,
+        experiment_name: str,
+        session_id: str,
     ) -> dict[str, Any]:
         """Abort future actions for a waiting UV-Vis batch."""
 
+        guard_instrument(student_id, session_id, batch_id)
         settings = load_settings(resolved_config)
         return batch_controller(settings).abort(
             batch_id,
             reason=reason,
             abort_confirmed=abort_confirmed,
+            student_id=student_id,
+            experiment_name=experiment_name,
+            session_id=session_id,
         )
 
     return server
