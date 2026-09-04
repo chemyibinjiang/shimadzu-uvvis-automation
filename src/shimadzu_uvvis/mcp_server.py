@@ -836,11 +836,26 @@ def create_mcp_server(
             return method_manager_factory(settings)
         return UVVisMethodManager(settings)
 
-    def guard_instrument(student_id: str, session_id: str, batch_id: str = "") -> None:
+    def guard_instrument(
+        student_id: str,
+        session_id: str,
+        batch_id: str = "",
+        *,
+        instrument_job_id: str = "",
+        lease_id: str = "",
+        fencing_token: str = "",
+        request_id: str = "",
+        idempotency_key: str = "",
+    ) -> None:
         guard_physical_action(
             student_id=student_id,
             session_id=session_id,
             batch_id=batch_id,
+            instrument_job_id=instrument_job_id,
+            lease_id=lease_id,
+            fencing_token=fencing_token,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
         )
 
     @server.tool(
