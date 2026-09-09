@@ -58,6 +58,186 @@ def _read(path: Path) -> dict[str, Any]:
         return {}
 
 
+def _write(path: Path, record: dict[str, Any]) -> dict[str, Any]:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            json.dump(record, handle, ensure_ascii=False, indent=2)
+        os.replace(temp_name, path)
+    finally:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+    return record
+
+
+def _validate_owner_and_tokens(
+    record: dict[str, Any],
+    *,
+    student_id: str,
+    session_id: str,
+    batch_id: str,
+    instrument_job_id: str,
+    lease_id: str,
+    fencing_token: str,
+    request_id: str,
+    idempotency_key: str,
+) -> None:
+    if str(record.get("state") or "FREE").upper() == "FREE":
+        raise RuntimeError("UV-Vis instrument lease is free")
+    if (
+        str(record.get("student_id") or "").strip() != str(student_id or "").strip()
+        or str(record.get("session_id") or "").strip() != str(session_id or "").strip()
+    ):
+        raise RuntimeError("UV-Vis instrument lease owner mismatch")
+    if batch_id and str(record.get("batch_id") or "").strip() != str(batch_id).strip():
+        raise RuntimeError("UV-Vis instrument lease batch mismatch")
+    expected = {
+        "instrument_job_id": instrument_job_id,
+        "lease_id": lease_id,
+        "fencing_token": fencing_token,
+    }
+    for key, supplied in expected.items():
+        if str(record.get(key) or "").strip() != str(supplied or "").strip():
+            raise RuntimeError(f"UV-Vis lease {key} mismatch")
+    if not request_id or not idempotency_key:
+        raise RuntimeError("UV-Vis lease release requires requestId and idempotencyKey")
+
+
+def mark_results_persisted(
+    *,
+    student_id: str,
+    session_id: str,
+    batch_id: str,
+    instrument_job_id: str,
+    lease_id: str,
+    fencing_token: str,
+    request_id: str,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Mark a completed batch's mapped results durable in the Shimadzu lease."""
+
+    path = _lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _file_mutex(path):
+        record = _read(path)
+        _validate_owner_and_tokens(
+            record,
+            student_id=student_id,
+            session_id=session_id,
+            batch_id=batch_id,
+            instrument_job_id=instrument_job_id,
+            lease_id=lease_id,
+            fencing_token=fencing_token,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+        )
+        record["results_persisted"] = True
+        record["last_seen_at"] = time.time()
+        record["last_request_id"] = request_id
+        record["last_idempotency_key"] = idempotency_key
+        return _write(path, record)
+
+
+def update_lease_state(
+    *,
+    student_id: str,
+    session_id: str,
+    batch_id: str,
+    batch_state: str,
+    mode: str,
+    instrument_job_id: str,
+    lease_id: str,
+    fencing_token: str,
+    request_id: str,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Persist the Shimadzu batch state associated with the active lease."""
+
+    path = _lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _file_mutex(path):
+        record = _read(path)
+        _validate_owner_and_tokens(
+            record,
+            student_id=student_id,
+            session_id=session_id,
+            batch_id=batch_id,
+            instrument_job_id=instrument_job_id,
+            lease_id=lease_id,
+            fencing_token=fencing_token,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+        )
+        record["batch_state"] = str(batch_state or "").strip().upper()
+        if mode:
+            record["mode"] = str(mode).strip()
+        record["last_seen_at"] = time.time()
+        record["last_request_id"] = request_id
+        record["last_idempotency_key"] = idempotency_key
+        return _write(path, record)
+
+
+def release_lease(
+    *,
+    student_id: str,
+    session_id: str,
+    batch_id: str,
+    instrument_job_id: str,
+    lease_id: str,
+    fencing_token: str,
+    request_id: str,
+    idempotency_key: str,
+) -> dict[str, Any]:
+    """Release a completed lease after Shimadzu-side persistence checks."""
+
+    path = _lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _file_mutex(path):
+        record = _read(path)
+        if str(record.get("state") or "FREE").upper() == "FREE":
+            return record
+        _validate_owner_and_tokens(
+            record,
+            student_id=student_id,
+            session_id=session_id,
+            batch_id=batch_id,
+            instrument_job_id=instrument_job_id,
+            lease_id=lease_id,
+            fencing_token=fencing_token,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+        )
+        if str(record.get("batch_state") or "").upper() != "COMPLETED":
+            raise RuntimeError("UV-Vis results are not complete; instrument remains held")
+        if not bool(record.get("results_persisted")):
+            raise RuntimeError("UV-Vis results are not persisted; instrument remains held")
+        record.update(
+            {
+                "state": "FREE",
+                "released_at": time.time(),
+                "last_seen_at": time.time(),
+                "student_id": "",
+                "session_id": "",
+                "device_id": "",
+                "batch_id": "",
+                "mode": "",
+                "batch_state": "",
+                "results_persisted": False,
+                "owner_label": "",
+                "lease_token": "",
+                "instrument_job_id": "",
+                "lease_id": "",
+                "fencing_token": "",
+                "last_request_id": request_id,
+                "last_idempotency_key": idempotency_key,
+            }
+        )
+        return _write(path, record)
+
+
 def guard_physical_action(
     *,
     student_id: str,

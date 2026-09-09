@@ -125,6 +125,9 @@ scan_speed_nm_per_min = 600.0
                     "get_uvvis_batch_status",
                     "restart_uvvis_batch",
                     "abort_uvvis_batch",
+                    "mark_uvvis_results_persisted",
+                    "update_uvvis_instrument_lease",
+                    "release_uvvis_instrument_lease",
                 ],
             )
             by_name = {tool.name: tool for tool in tools}

@@ -34,7 +34,12 @@ from .storage_paths import (
     student_batch_directory,
     student_uvvis_directory,
 )
-from .instrument_lock import guard_physical_action
+from .instrument_lock import (
+    guard_physical_action,
+    mark_results_persisted,
+    release_lease,
+    update_lease_state,
+)
 
 
 CONFIG_ENVIRONMENT_VARIABLE = "SHIMADZU_UVVIS_CONFIG"
@@ -858,6 +863,41 @@ def create_mcp_server(
             idempotency_key=idempotency_key,
         )
 
+    def lease_credentials(
+        *,
+        student_id: str,
+        session_id: str,
+        batch_id: str,
+        instrument_job_id: str,
+        lease_id: str,
+        fencing_token: str,
+        request_id: str,
+        idempotency_key: str,
+    ) -> dict[str, str]:
+        values = {
+            "student_id": student_id,
+            "session_id": session_id,
+            "batch_id": batch_id,
+            "instrument_job_id": instrument_job_id,
+            "lease_id": lease_id,
+            "fencing_token": fencing_token,
+            "request_id": request_id,
+            "idempotency_key": idempotency_key,
+        }
+        missing = [key for key, value in values.items() if not str(value or "").strip()]
+        if missing:
+            raise ValueError("UV-Vis lease credentials required: " + ", ".join(missing))
+        return {
+            key: str(values[key]).strip()
+            for key in (
+                "instrument_job_id",
+                "lease_id",
+                "fencing_token",
+                "request_id",
+                "idempotency_key",
+            )
+        }
+
     @server.tool(
         name="plan_uvvis_measurement",
         title="Plan UV-Vis measurement",
@@ -1088,6 +1128,11 @@ def create_mcp_server(
         student_id: str,
         experiment_name: str,
         session_id: str,
+        instrument_job_id: str = "",
+        lease_id: str = "",
+        fencing_token: str = "",
+        request_id: str = "",
+        idempotency_key: str = "",
         mode: PlanningMode = "auto",
         baseline_policy: BaselinePolicy = "new",
         signal_type: str = "absorbance",
@@ -1103,7 +1148,13 @@ def create_mcp_server(
     ) -> dict[str, Any]:
         """Start one persisted manual sample batch from an exact method."""
 
-        guard_instrument(student_id, session_id, batch_id)
+        creds = lease_credentials(
+            student_id=student_id, session_id=session_id, batch_id=batch_id,
+            instrument_job_id=instrument_job_id, lease_id=lease_id,
+            fencing_token=fencing_token, request_id=request_id,
+            idempotency_key=idempotency_key,
+        )
+        guard_instrument(student_id, session_id, batch_id, **creds)
         settings = load_settings(resolved_config)
         plan = build_uvvis_sample_batch_plan(
             settings,
@@ -1154,10 +1205,21 @@ def create_mcp_server(
         student_id: str,
         experiment_name: str,
         session_id: str,
+        instrument_job_id: str = "",
+        lease_id: str = "",
+        fencing_token: str = "",
+        request_id: str = "",
+        idempotency_key: str = "",
     ) -> dict[str, Any]:
         """Correct the active UV-Vis batch baseline exactly once."""
 
-        guard_instrument(student_id, session_id, batch_id)
+        creds = lease_credentials(
+            student_id=student_id, session_id=session_id, batch_id=batch_id,
+            instrument_job_id=instrument_job_id, lease_id=lease_id,
+            fencing_token=fencing_token, request_id=request_id,
+            idempotency_key=idempotency_key,
+        )
+        guard_instrument(student_id, session_id, batch_id, **creds)
         settings = load_settings(resolved_config)
         return batch_controller(settings).correct_baseline(
             batch_id,
@@ -1192,10 +1254,21 @@ def create_mcp_server(
         student_id: str,
         experiment_name: str,
         session_id: str,
+        instrument_job_id: str = "",
+        lease_id: str = "",
+        fencing_token: str = "",
+        request_id: str = "",
+        idempotency_key: str = "",
     ) -> dict[str, Any]:
         """Measure and archive the exact next sample in an active batch."""
 
-        guard_instrument(student_id, session_id, batch_id)
+        creds = lease_credentials(
+            student_id=student_id, session_id=session_id, batch_id=batch_id,
+            instrument_job_id=instrument_job_id, lease_id=lease_id,
+            fencing_token=fencing_token, request_id=request_id,
+            idempotency_key=idempotency_key,
+        )
+        guard_instrument(student_id, session_id, batch_id, **creds)
         settings = load_settings(resolved_config)
         return batch_controller(settings).measure_next(
             batch_id,
@@ -1230,10 +1303,21 @@ def create_mcp_server(
         student_id: str,
         experiment_name: str,
         session_id: str,
+        instrument_job_id: str = "",
+        lease_id: str = "",
+        fencing_token: str = "",
+        request_id: str = "",
+        idempotency_key: str = "",
     ) -> dict[str, Any]:
         """Replace one completed sample result without repeating the baseline."""
 
-        guard_instrument(student_id, session_id, batch_id)
+        creds = lease_credentials(
+            student_id=student_id, session_id=session_id, batch_id=batch_id,
+            instrument_job_id=instrument_job_id, lease_id=lease_id,
+            fencing_token=fencing_token, request_id=request_id,
+            idempotency_key=idempotency_key,
+        )
+        guard_instrument(student_id, session_id, batch_id, **creds)
         settings = load_settings(resolved_config)
         return batch_controller(settings).remeasure(
             batch_id,
@@ -1368,6 +1452,11 @@ def create_mcp_server(
         student_id: str,
         experiment_name: str,
         session_id: str,
+        instrument_job_id: str = "",
+        lease_id: str = "",
+        fencing_token: str = "",
+        request_id: str = "",
+        idempotency_key: str = "",
         mode: PlanningMode = "auto",
         signal_type: str = "absorbance",
         template_name: str | None = None,
@@ -1383,7 +1472,13 @@ def create_mcp_server(
     ) -> dict[str, Any]:
         """Start a clean replacement batch and require a new baseline."""
 
-        guard_instrument(student_id, session_id, batch_id)
+        creds = lease_credentials(
+            student_id=student_id, session_id=session_id, batch_id=batch_id,
+            instrument_job_id=instrument_job_id, lease_id=lease_id,
+            fencing_token=fencing_token, request_id=request_id,
+            idempotency_key=idempotency_key,
+        )
+        guard_instrument(student_id, session_id, batch_id, **creds)
         settings = load_settings(resolved_config)
         # Keep replacement batches session-scoped as well as unique.  This
         # prevents a model-supplied or timestamp-only id from being reused by
@@ -1443,10 +1538,21 @@ def create_mcp_server(
         student_id: str,
         experiment_name: str,
         session_id: str,
+        instrument_job_id: str = "",
+        lease_id: str = "",
+        fencing_token: str = "",
+        request_id: str = "",
+        idempotency_key: str = "",
     ) -> dict[str, Any]:
         """Abort future actions for a waiting UV-Vis batch."""
 
-        guard_instrument(student_id, session_id, batch_id)
+        creds = lease_credentials(
+            student_id=student_id, session_id=session_id, batch_id=batch_id,
+            instrument_job_id=instrument_job_id, lease_id=lease_id,
+            fencing_token=fencing_token, request_id=request_id,
+            idempotency_key=idempotency_key,
+        )
+        guard_instrument(student_id, session_id, batch_id, **creds)
         settings = load_settings(resolved_config)
         return batch_controller(settings).abort(
             batch_id,
@@ -1455,6 +1561,120 @@ def create_mcp_server(
             student_id=student_id,
             experiment_name=experiment_name,
             session_id=session_id,
+        )
+
+    @server.tool(
+        name="mark_uvvis_results_persisted",
+        title="Mark UV-Vis results persisted",
+        description=(
+            "Record that completed UV-Vis results have been durably mapped before "
+            "the Shimadzu-owned instrument lease can be released. This is an "
+            "internal service operation and performs no instrument command."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
+        structured_output=True,
+    )
+    def mark_uvvis_results_persisted(
+        batch_id: str,
+        student_id: str,
+        session_id: str,
+        instrument_job_id: str,
+        lease_id: str,
+        fencing_token: str,
+        request_id: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return mark_results_persisted(
+            student_id=student_id,
+            session_id=session_id,
+            batch_id=batch_id,
+            instrument_job_id=instrument_job_id,
+            lease_id=lease_id,
+            fencing_token=fencing_token,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+        )
+
+    @server.tool(
+        name="update_uvvis_instrument_lease",
+        title="Update UV-Vis instrument lease state",
+        description=(
+            "Persist the latest Shimadzu batch state for the active lease after a "
+            "successful operation. This is an internal service operation."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
+        structured_output=True,
+    )
+    def update_uvvis_instrument_lease(
+        batch_id: str,
+        batch_state: str,
+        student_id: str,
+        session_id: str,
+        instrument_job_id: str,
+        lease_id: str,
+        fencing_token: str,
+        request_id: str,
+        idempotency_key: str,
+        mode: str = "",
+    ) -> dict[str, Any]:
+        return update_lease_state(
+            student_id=student_id,
+            session_id=session_id,
+            batch_id=batch_id,
+            batch_state=batch_state,
+            mode=mode,
+            instrument_job_id=instrument_job_id,
+            lease_id=lease_id,
+            fencing_token=fencing_token,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+        )
+
+    @server.tool(
+        name="release_uvvis_instrument_lease",
+        title="Release UV-Vis instrument lease",
+        description=(
+            "Release a completed Shimadzu UV-Vis instrument lease after result "
+            "persistence and fencing-token validation. This operation does not "
+            "abort an active batch."
+        ),
+        annotations=ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        ),
+        structured_output=True,
+    )
+    def release_uvvis_instrument_lease(
+        batch_id: str,
+        student_id: str,
+        session_id: str,
+        instrument_job_id: str,
+        lease_id: str,
+        fencing_token: str,
+        request_id: str,
+        idempotency_key: str,
+    ) -> dict[str, Any]:
+        return release_lease(
+            student_id=student_id,
+            session_id=session_id,
+            batch_id=batch_id,
+            instrument_job_id=instrument_job_id,
+            lease_id=lease_id,
+            fencing_token=fencing_token,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
         )
 
     return server
