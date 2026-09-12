@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from contextlib import nullcontext
 from pathlib import Path
+from shimadzu_uvvis.storage_paths import student_storage_key
 from types import MappingProxyType
 from unittest.mock import patch
 
@@ -770,7 +771,7 @@ directory = "{(root / "outputs").as_posix()}"
             expected_directory = (
                 root
                 / "data"
-                / "stu_20240001"
+                / student_storage_key("stu_20240001")
                 / "银纳米粒子的制备与表征"
                 / "session_001"
                 / "uvvis"
@@ -782,7 +783,7 @@ directory = "{(root / "outputs").as_posix()}"
             result_directory = (
                 root
                 / "data"
-                / "stu_20240001"
+                / student_storage_key("stu_20240001")
                 / "银纳米粒子的制备与表征"
                 / "session_001"
                 / "uvvis"
@@ -857,7 +858,7 @@ directory = "{(root / "outputs").as_posix()}"
             sample_dir = (
                 root
                 / "data"
-                / "stu_20240001"
+                / student_storage_key("stu_20240001")
                 / "Ag纳米粒子的制备及应用"
                 / "session_kinetics"
                 / "uvvis"

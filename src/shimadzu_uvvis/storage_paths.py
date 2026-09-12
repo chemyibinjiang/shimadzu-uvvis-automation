@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import hashlib
 import unicodedata
 from pathlib import Path
 
@@ -20,6 +21,14 @@ _WINDOWS_RESERVED_NAMES = {
 
 class StoragePathError(ValueError):
     """Raised when a storage context cannot produce a safe directory path."""
+
+
+def student_storage_key(student_id: str) -> str:
+    """Match the gateway/portal account-derived key; never hash a display name."""
+    identity = unicodedata.normalize("NFKC", str(student_id or "").strip())
+    if not identity:
+        raise StoragePathError("student_id is required for a student storage key")
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
 
 
 def safe_storage_component(
@@ -85,11 +94,7 @@ def student_uvvis_directory(
     experiment_name: str,
     session_id: str,
 ) -> Path:
-    # Keep the gateway's canonical student directory name (for example
-    # ``stu_123456``).  Photo archives and experiment reports use this exact
-    # owner directory, so stripping the prefix here would split one session
-    # across two unrelated data trees.
-    student_account = safe_storage_component(student_id, "student_id")
+    student_account = student_storage_key(student_id)
     experiment_directory = safe_storage_component(
         experiment_name,
         "experiment_name",

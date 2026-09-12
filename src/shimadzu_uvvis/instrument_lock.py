@@ -116,6 +116,7 @@ def mark_results_persisted(
     fencing_token: str,
     request_id: str,
     idempotency_key: str,
+    completed_step_id: str = "",
 ) -> dict[str, Any]:
     """Mark a completed batch's mapped results durable in the Shimadzu lease."""
 
@@ -134,7 +135,15 @@ def mark_results_persisted(
             request_id=request_id,
             idempotency_key=idempotency_key,
         )
+        if record.get("batch_state") != "COMPLETED":
+            raise RuntimeError("UV-Vis batch is not complete; results cannot be marked persisted")
         record["results_persisted"] = True
+        if completed_step_id:
+            required=record.get("required_step_ids") or []
+            if required and completed_step_id not in required:
+                raise RuntimeError("UV-Vis step does not belong to the reserved experiment")
+            record["completed_step_ids"]=list(dict.fromkeys([*record.get("completed_step_ids",[]),completed_step_id]))
+        record["remaining_step_ids"]=[s for s in record.get("required_step_ids",[]) if s not in record.get("completed_step_ids",[])]
         record["last_seen_at"] = time.time()
         record["last_request_id"] = request_id
         record["last_idempotency_key"] = idempotency_key
@@ -214,6 +223,8 @@ def release_lease(
             raise RuntimeError("UV-Vis results are not complete; instrument remains held")
         if not bool(record.get("results_persisted")):
             raise RuntimeError("UV-Vis results are not persisted; instrument remains held")
+        if any(s not in record.get("completed_step_ids",[]) for s in record.get("required_step_ids",[])):
+            raise RuntimeError("This experiment still has unfinished UV-Vis steps; instrument remains held")
         record.update(
             {
                 "state": "FREE",
@@ -235,7 +246,10 @@ def release_lease(
                 "last_idempotency_key": idempotency_key,
             }
         )
-        return _write(path, record)
+        from .access_queue import promote
+        promote(record)
+        result=_write(path, record)
+        return {**result, "released_session_id": session_id}
 
 
 def guard_physical_action(
@@ -292,10 +306,24 @@ def guard_physical_action(
                 expected = str(record.get(key) or "").strip()
                 if expected and expected != str(supplied or "").strip():
                     raise RuntimeError(f"UV-Vis lease {key} mismatch")
+            if batch_id and record.get("batch_id") != batch_id:
+                if record.get("batch_id") and not (record.get("batch_state")=="COMPLETED" and record.get("results_persisted")):
+                    raise RuntimeError("Previous UV-Vis batch is not complete and persisted")
+                record.update(batch_id=batch_id,batch_state="PREPARING",results_persisted=False,phase="ACTIVE")
+                _write(path,record)
             return
+        from .access_queue import promote
+        promote(record)
+        if record.get("state", "FREE") != "FREE":
+            _write(path,record)
+            raise RuntimeError("A queued experiment has priority; request instrument access first")
         record.update(
             {
                 "schema_version": 1,
+                "required_step_ids": [],
+                "completed_step_ids": [],
+                "remaining_step_ids": [],
+                "phase": "ACTIVE",
                 "instrument_id": os.getenv("SHIMADZU_UVVIS_INSTRUMENT_ID", ""),
                 "node_id": os.getenv("AI_TUTOR_NODE_ID", ""),
                 "state": "HELD",

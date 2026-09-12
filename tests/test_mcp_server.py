@@ -4,6 +4,7 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from shimadzu_uvvis.storage_paths import student_storage_key
 
 from shimadzu_uvvis.configuration import load_settings
 from shimadzu_uvvis.mcp_server import (
@@ -128,6 +129,8 @@ scan_speed_nm_per_min = 600.0
                     "mark_uvvis_results_persisted",
                     "update_uvvis_instrument_lease",
                     "release_uvvis_instrument_lease",
+                    "request_uvvis_access",
+                    "cancel_uvvis_wait",
                 ],
             )
             by_name = {tool.name: tool for tool in tools}
@@ -541,7 +544,7 @@ scan_speed_nm_per_min = 600.0
             results_directory = (
                 root
                 / "data"
-                / "stu_20240001"
+                / student_storage_key("stu_20240001")
                 / "银纳米粒子的制备与表征"
                 / "session_001"
                 / "uvvis"
@@ -554,7 +557,7 @@ scan_speed_nm_per_min = 600.0
             self.assertEqual(plan["session_id"], "session_001")
             self.assertEqual(
                 plan["storage_layout"],
-                "data/<student_id>/<experiment_name>/<session_id>/uvvis/<sample_name>",
+                "data/<student_hash>/<experiment_name>/<session_id>/uvvis/<sample_name>",
             )
             paths = plan["samples"][0]["paths"]
             sample_directory = results_directory / "1号样品"
@@ -599,7 +602,7 @@ scan_speed_nm_per_min = 600.0
             )
             self.assertEqual(
                 Path(plan["results_directory"]).parts[-5:],
-                ("data", "stu_20240001", "银纳米粒子的制备与表征", "session_001", "uvvis"),
+                ("data", student_storage_key("stu_20240001"), "银纳米粒子的制备与表征", "session_001", "uvvis"),
             )
             self.assertEqual(Path(plan["batch_directory"]).name, plan["batch_id"])
 
@@ -737,7 +740,7 @@ scan_speed_nm_per_min = 600.0
             existing = (
                 root
                 / "data"
-                / "20240001"
+                / student_storage_key("stu_20240001")
                 / "实验甲"
                 / "session_a"
                 / "uvvis"

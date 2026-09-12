@@ -154,6 +154,7 @@ class WindowsSpectrumMethodUi(WindowsLabSolutionsUi):
     """LabSolutions 1.13 Spectrum method editor automation by stable control IDs."""
 
     _SW_RESTORE = 9
+    _SW_SHOW = 5
     _CB_GETCOUNT = 0x0146
     _CB_GETCURSEL = 0x0147
     _CB_GETLBTEXT = 0x0148
@@ -204,12 +205,17 @@ class WindowsSpectrumMethodUi(WindowsLabSolutionsUi):
         return matches[0] if matches else None
 
     def _instrument_panel(self, process_id: int) -> int | None:
-        return self._top_dialog_matching(
-            process_id,
-            lambda title: title.casefold()
-            in {"仪器控制面板", "instrument control panel"},
-            enabled=False,
-        )
+        # Automatic Control hides the existing panel without disconnecting.
+        # A hidden connected panel must be restored, not mistaken for a
+        # missing connection (the Connect menu is disabled in that state).
+        matches = [handle for handle in self._windows(process_id=process_id)
+            if self._window_text(handle).strip().casefold()
+            in {"仪器控制面板", "instrument control panel"}
+            and self._control(handle, 11002, "Static") is not None
+            and self._control(handle, 1638, "Button") is not None]
+        if len(matches) > 1:
+            raise SpectrumMethodGenerationError("Multiple Spectrum instrument panels matched")
+        return matches[0] if matches else None
 
     def _initialization_dialog(self, process_id: int) -> int | None:
         return self._top_dialog_matching(
@@ -316,8 +322,12 @@ class WindowsSpectrumMethodUi(WindowsLabSolutionsUi):
 
     def _connect_instrument(self, window: SpectrumWindow) -> int:
         panel = self._instrument_panel(window.process_id)
-        if panel is not None and self._panel_connected(panel):
-            return panel
+        if panel is not None:
+            self._user32.ShowWindow(panel, self._SW_SHOW)
+            self._wait_until(lambda: self._user32.IsWindowVisible(panel),
+                "Spectrum Instrument Control panel to show")
+            if self._panel_connected(panel):
+                return panel
 
         command = self._find_menu_command(
             window.handle,
@@ -332,6 +342,7 @@ class WindowsSpectrumMethodUi(WindowsLabSolutionsUi):
         )
         assert isinstance(panel_value, int)
         panel = panel_value
+        self._user32.ShowWindow(panel, self._SW_SHOW)
 
         initialization = self._wait_until(
             lambda: self._initialization_dialog(window.process_id)

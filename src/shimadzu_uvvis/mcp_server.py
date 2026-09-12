@@ -40,6 +40,7 @@ from .instrument_lock import (
     release_lease,
     update_lease_state,
 )
+from .access_queue import request_access, cancel_wait
 
 
 CONFIG_ENVIRONMENT_VARIABLE = "SHIMADZU_UVVIS_CONFIG"
@@ -729,7 +730,7 @@ def build_uvvis_sample_batch_plan(
         "batch_directory": str(batch_directory),
         "results_directory": str(results_directory),
         "storage_layout": (
-            "data/<student_id>/<experiment_name>/<session_id>/uvvis/<sample_name>"
+            "data/<student_hash>/<experiment_name>/<session_id>/uvvis/<sample_name>"
             if student_account
             else "data/<batch_id>"
         ),
@@ -1588,6 +1589,7 @@ def create_mcp_server(
         fencing_token: str,
         request_id: str,
         idempotency_key: str,
+        completed_step_id: str = "",
     ) -> dict[str, Any]:
         return mark_results_persisted(
             student_id=student_id,
@@ -1598,6 +1600,7 @@ def create_mcp_server(
             fencing_token=fencing_token,
             request_id=request_id,
             idempotency_key=idempotency_key,
+            completed_step_id=completed_step_id,
         )
 
     @server.tool(
@@ -1676,6 +1679,20 @@ def create_mcp_server(
             request_id=request_id,
             idempotency_key=idempotency_key,
         )
+
+    @server.tool(name="request_uvvis_access", description="Reserve or queue this student's experiment for the instrument; never measures.",
+        annotations=ToolAnnotations(readOnlyHint=False,destructiveHint=False,idempotentHint=True,openWorldHint=False), structured_output=True)
+    def request_uvvis_access(student_id: str, session_id: str, device_id: str = "", owner_label: str = "",
+        required_step_ids: list[str] | None = None, completed_step_ids: list[str] | None = None,
+        current_step_id: str = "", join: bool = True, preparing: bool = False) -> dict[str, Any]:
+        return request_access(student_id=student_id,session_id=session_id,device_id=device_id,owner_label=owner_label,
+            required_step_ids=required_step_ids,completed_step_ids=completed_step_ids,current_step_id=current_step_id,
+            join=join,preparing=preparing)
+
+    @server.tool(name="cancel_uvvis_wait", description="Cancel this student's queued request or unused reservation; never interrupts a batch.",
+        annotations=ToolAnnotations(readOnlyHint=False,destructiveHint=False,idempotentHint=True,openWorldHint=False), structured_output=True)
+    def cancel_uvvis_wait(student_id: str, session_id: str) -> dict[str, Any]:
+        return cancel_wait(student_id=student_id,session_id=session_id)
 
     return server
 

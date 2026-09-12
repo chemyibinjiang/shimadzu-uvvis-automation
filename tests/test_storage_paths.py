@@ -1,9 +1,10 @@
 from pathlib import Path
+from shimadzu_uvvis.storage_paths import student_storage_key
 
 from shimadzu_uvvis.storage_paths import student_batch_directory, student_uvvis_directory
 
 
-def test_student_uvvis_directory_keeps_gateway_student_directory_prefix(tmp_path: Path) -> None:
+def test_student_uvvis_directory_matches_gateway_student_hash(tmp_path: Path) -> None:
     uvvis = student_uvvis_directory(
         tmp_path / "data",
         student_id="stu_123456",
@@ -14,7 +15,7 @@ def test_student_uvvis_directory_keeps_gateway_student_directory_prefix(tmp_path
     assert uvvis == (
         tmp_path
         / "data"
-        / "stu_123456"
+        / student_storage_key("stu_123456")
         / "碘酸铜溶度积的测定"
         / "sess_000412"
         / "uvvis"
@@ -31,5 +32,5 @@ def test_student_batch_directory_uses_the_same_uvvis_owner_directory(tmp_path: P
     )
 
     assert batch == (
-        tmp_path / "data" / "stu_123456" / "experiment" / "sess_001" / "uvvis" / ".batches" / "batch_001"
+        tmp_path / "data" / student_storage_key("stu_123456") / "experiment" / "sess_001" / "uvvis" / ".batches" / "batch_001"
     )

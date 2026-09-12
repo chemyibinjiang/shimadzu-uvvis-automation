@@ -724,6 +724,18 @@ class SpectrumBatchController:
             )
         return baseline
 
+    def _validate_sample_baseline(self, manifest: Mapping[str, Any], methods: list[Path]) -> None:
+        """Every sample must use the completed baseline for this exact method/reference."""
+        baseline = manifest.get("baseline") or {}
+        record = baseline.get("record") or {}
+        if baseline.get("status") not in {"COMPLETED", "REUSED"} or not record.get("completed_at_utc"):
+            raise SpectrumBatchError("sample measurement requires a completed baseline record")
+        current = self._reusable_baseline(mode=manifest["mode"], methods=methods,
+            method_sha256s=list(manifest["method_sha256s"]), reference_name=manifest["reference_name"])
+        for field in ("mode", "method_files", "method_sha256s", "reference_name", "completed_at_utc"):
+            if record.get(field) != current.get(field):
+                raise SpectrumBatchError("baseline changed after this batch was prepared; start a new batch and correct the blank")
+
     def start(
         self, plan: Mapping[str, Any], *, execution_confirmed: bool
     ) -> dict[str, Any]:
@@ -1097,6 +1109,7 @@ class SpectrumBatchController:
                     "method_sha256s": manifest["method_sha256s"],
                     "reference_name": manifest["reference_name"],
                     "correction_type": 1,
+                    "runtime_process_id": runtime_ready.process_id,
                     "completed_at_utc": _utc_now(),
                 }
                 write_json_atomic(self.baseline_path, baseline)
@@ -1602,6 +1615,7 @@ class SpectrumBatchController:
                         f"current state is {manifest.get('state')}"
                     )
                 methods = self._validate_methods(manifest)
+                self._validate_sample_baseline(manifest, methods)
                 mode = str(manifest["mode"])
                 index = int(manifest["next_sample_index"])
                 samples = manifest["samples"]
@@ -1641,6 +1655,11 @@ class SpectrumBatchController:
                 runtime_ready = self._runtime_manager(mode).ensure_ready(
                     allow_reconfigure=False
                 )
+                baseline_pid = manifest["baseline"]["record"].get("runtime_process_id")
+                if baseline_pid is None:
+                    baseline_pid = (manifest.get("runtime") or {}).get("process_id")
+                if baseline_pid is not None and baseline_pid != runtime_ready.process_id:
+                    raise SpectrumBatchError("LabSolutions restarted after baseline correction; start a new batch and correct the blank before measuring")
                 manifest["runtime"] = self._runtime_record(runtime_ready)
                 self._append_feedback(
                     manifest,
