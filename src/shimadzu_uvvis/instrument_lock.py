@@ -352,3 +352,15 @@ def guard_physical_action(
                 os.unlink(temp_name)
             except FileNotFoundError:
                 pass
+
+
+def guard_method_generation(**credentials: Any) -> None:
+    """Method editing must not disturb another student's or an active batch's baseline."""
+    guard_physical_action(**credentials)
+    if str(os.getenv("SHIMADZU_UVVIS_ENFORCE_INSTRUMENT_LOCK", "false")).lower() not in {"1", "true", "yes", "on"}:
+        return
+    path = _lock_path()
+    with _file_mutex(path):
+        record = _read(path)
+        if record.get("batch_id") and not (record.get("batch_state") == "COMPLETED" and record.get("results_persisted")):
+            raise RuntimeError("Cannot change a method while a UV-Vis batch is active or unpersisted")

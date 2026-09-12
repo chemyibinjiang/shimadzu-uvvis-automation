@@ -36,6 +36,7 @@ from .storage_paths import (
 )
 from .instrument_lock import (
     guard_physical_action,
+    guard_method_generation,
     mark_results_persisted,
     release_lease,
     update_lease_state,
@@ -985,9 +986,19 @@ def create_mcp_server(
         wavelengths_nm: list[float] | None = None,
         interval_seconds: float | None = None,
         duration_seconds: float | None = None,
+        student_id: str = "",
+        session_id: str = "",
+        instrument_job_id: str = "",
+        lease_id: str = "",
+        fencing_token: str = "",
+        request_id: str = "",
+        idempotency_key: str = "",
     ) -> dict[str, Any]:
         """Generate and attest the methods required by one logical request."""
 
+        guard_method_generation(student_id=student_id, session_id=session_id,
+            instrument_job_id=instrument_job_id, lease_id=lease_id, fencing_token=fencing_token,
+            request_id=request_id, idempotency_key=idempotency_key)
         settings = load_settings(resolved_config)
         request = build_measurement_request(
             mode=mode,

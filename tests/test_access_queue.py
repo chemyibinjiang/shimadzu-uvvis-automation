@@ -68,3 +68,18 @@ def test_polling_does_not_join_queue_or_steal_a_reservation():
     other=queue.request_access(student_id='b',session_id='sb',join=False)
     assert other['queue_position']==0 and not other['owned_by_current_session']
     assert other['queue']==[]
+
+
+def test_method_generation_requires_owner_and_cannot_change_an_active_baseline():
+    a=queue.request_access(student_id='a',session_id='sa',required_step_ids=['scan','standards'],current_step_id='scan')
+    cap=creds(a)
+    lease.guard_method_generation(student_id='a',session_id='sa',**cap)
+    with pytest.raises(RuntimeError):lease.guard_method_generation(student_id='b',session_id='sb',**cap)
+    lease.guard_physical_action(student_id='a',session_id='sa',batch_id='scan',**cap)
+    with pytest.raises(RuntimeError,match='Cannot change a method'):
+        lease.guard_method_generation(student_id='a',session_id='sa',**cap)
+    lease.update_lease_state(student_id='a',session_id='sa',batch_id='scan',batch_state='COMPLETED',mode='spectrum',**cap)
+    with pytest.raises(RuntimeError,match='Cannot change a method'):
+        lease.guard_method_generation(student_id='a',session_id='sa',**cap)
+    lease.mark_results_persisted(student_id='a',session_id='sa',batch_id='scan',completed_step_id='scan',**cap)
+    lease.guard_method_generation(student_id='a',session_id='sa',**cap)

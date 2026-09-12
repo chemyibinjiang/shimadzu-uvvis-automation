@@ -58,7 +58,7 @@ def request_access(*,student_id:str,session_id:str,device_id:str='',owner_label:
             record['completed_step_ids']=list(dict.fromkeys([*record.get('completed_step_ids',[]),*completed]))
             previous=record.get('current_step_id','')
             if current_step_id and current_step_id!=previous:
-                if record.get('batch_id') and not (record.get('batch_state') == 'COMPLETED' and record.get('results_persisted')):
+                if previous and record.get('batch_id') and not (record.get('batch_state') == 'COMPLETED' and record.get('results_persisted')):
                     raise RuntimeError('Previous UV-Vis batch is not complete and persisted')
                 record['current_step_id']=current_step_id
         else:
