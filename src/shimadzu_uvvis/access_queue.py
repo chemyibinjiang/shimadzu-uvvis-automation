@@ -1,11 +1,44 @@
 """Shimadzu-owned FIFO access queue and experiment-scoped reservations."""
 from __future__ import annotations
-import hashlib,os,time,uuid
+import hashlib,json,os,time,uuid
+from pathlib import Path
 from typing import Any
 from . import instrument_lock as lease
 
 WAIT_TTL_SECONDS=300
 MAX_QUEUE=128
+COMPLETED_IDLE_TTL_SECONDS=1800
+
+
+def _expire_completed_idle_reservation(record, now):
+    """A saved terminal batch must not reserve unused equipment forever.
+
+    This ends only the reservation, not the student's unfinished experiment.
+    An active or unpersisted batch never expires, even without a heartbeat.
+    """
+    if (record.get('state') != 'HELD' or record.get('batch_state') != 'COMPLETED'
+        or not record.get('results_persisted')
+        or not record.get('last_seen_at')
+        or now-float(record['last_seen_at']) <= COMPLETED_IDLE_TTL_SECONDS):
+        return
+    marker=Path(os.getenv('AI_TUTOR_DATA_ROOT') or r'D:\AI-Tutor-Data')/'data'/'.active_spectrum_batch.json'
+    try:
+        active=json.loads(marker.read_text(encoding='utf-8'))
+        if not isinstance(active,dict) or active.get('state') not in {'COMPLETED','ABORTED','FAILED'}:
+            return
+    except FileNotFoundError:
+        pass
+    except (OSError,ValueError):
+        return
+    record['last_expired_reservation']={
+        'session_id':record.get('session_id'), 'batch_id':record.get('batch_id'),
+        'expired_at':now, 'reason':'completed_persisted_batch_idle',
+        'required_step_ids':list(record.get('required_step_ids') or []),
+        'completed_step_ids':list(record.get('completed_step_ids') or [])}
+    record.update(state='FREE',student_id='',session_id='',device_id='',owner_label='',
+        batch_id='',batch_state='',mode='',phase='',results_persisted=False,
+        instrument_job_id='',lease_id='',fencing_token='',lease_token='',released_at=now,
+        required_step_ids=[],completed_step_ids=[],current_step_id='',remaining_step_ids=[])
 
 def _same(item,student,session):
     return item.get('student_id')==student and item.get('session_id')==session
@@ -49,6 +82,7 @@ def request_access(*,student_id:str,session_id:str,device_id:str='',owner_label:
     now=time.time();path=lease._lock_path();path.parent.mkdir(parents=True,exist_ok=True)
     with lease._file_mutex(path):
         record=lease._read(path) or {'state':'FREE','queue':[]}
+        _expire_completed_idle_reservation(record,now)
         if record.get('state')=='HELD' and not record.get('batch_id') and record.get('phase')=='RESERVED' and now-float(record.get('last_seen_at') or 0)>WAIT_TTL_SECONDS:
             record.update(state='FREE',student_id='',session_id='',device_id='')
         promote(record,now)
