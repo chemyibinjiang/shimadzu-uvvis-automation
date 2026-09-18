@@ -583,7 +583,7 @@ def build_uvvis_sample_batch_plan(
             else run_sample_id
         )
         sample_directory = (
-            results_directory / sample_file_stem
+            results_directory / sample_file_stem / f"{selected_mode}_{normalized_batch_id}"
             if human_readable_results
             else batch_directory / run_sample_id
         )

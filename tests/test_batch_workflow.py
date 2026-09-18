@@ -788,6 +788,7 @@ directory = "{(root / "outputs").as_posix()}"
                 / "session_001"
                 / "uvvis"
                 / "1号样品"
+                / f"spectrum_{batch_id}"
             )
             self.assertTrue((result_directory / "raw").is_dir())
 
@@ -863,6 +864,7 @@ directory = "{(root / "outputs").as_posix()}"
                 / "session_kinetics"
                 / "uvvis"
                 / "2号 Ag NPs"
+                / "time_course_kinetics_400nm"
             )
             self.assertTrue((sample_dir / "raw" / "2号 Ag NPs.vtmd").is_file())
             self.assertTrue((sample_dir / "2号 Ag NPs.csv").is_file())

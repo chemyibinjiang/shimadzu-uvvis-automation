@@ -560,7 +560,7 @@ scan_speed_nm_per_min = 600.0
                 "data/<student_hash>/<experiment_name>/<session_id>/uvvis/<sample_name>",
             )
             paths = plan["samples"][0]["paths"]
-            sample_directory = results_directory / "1号样品"
+            sample_directory = results_directory / "1号样品" / "spectrum_uvvis_20260724_153012"
             self.assertEqual(Path(paths["sample_directory"]), sample_directory)
             self.assertEqual(
                 Path(paths["merged_csv_file"]), sample_directory / "1号样品.csv"
