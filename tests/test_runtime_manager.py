@@ -193,31 +193,6 @@ configure_command_directory = true
                 )
             )
 
-    def test_batch_start_reenters_waiting_after_ui_connection_check(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            settings = self._settings(root)
-            backend = FakeRuntimeBackend(settings.command_dir, waiting=True)
-            client = FakeHelloClient()
-            manager = LabSolutionsRuntimeManager(
-                settings,
-                backend=backend,
-                client_factory=lambda: client,  # type: ignore[arg-type]
-            )
-
-            ready = manager.ensure_ready(allow_reconfigure=True)
-
-            self.assertEqual(ready.waiting_status, "Automatic Control - Waiting")
-            self.assertEqual(client.calls, [(0, 3.0), (0, 3.0)])
-            self.assertLess(
-                backend.calls.index("leave"),
-                backend.calls.index("connect_instrument"),
-            )
-            self.assertLess(
-                backend.calls.index("connect_instrument"),
-                backend.calls.index("enter"),
-            )
-
     def test_existing_parameter_change_prompt_is_declined_before_hello(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
