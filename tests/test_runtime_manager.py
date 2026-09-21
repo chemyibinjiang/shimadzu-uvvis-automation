@@ -36,6 +36,10 @@ class FakeRuntimeBackend:
         self.calls.append("find_window")
         return self.window if self.window_available else None
 
+    def close_unmatched_mode_windows(self) -> list[int]:
+        self.calls.append("close_unmatched")
+        return []
+
     def ensure_spectrum_window(self) -> tuple[SpectrumWindow, bool]:
         self.calls.append("ensure_window")
         return self.window, self.launched
@@ -314,6 +318,7 @@ configure_command_directory = true
 
             self.assertEqual(released["state"], "RELEASED")
             self.assertTrue(released["already_absent"])
+            self.assertIn("close_unmatched", backend.calls)
             self.assertNotIn("ensure_window", backend.calls)
             self.assertEqual(client.calls, [])
 

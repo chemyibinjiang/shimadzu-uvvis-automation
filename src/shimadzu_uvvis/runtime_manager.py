@@ -98,6 +98,8 @@ class RuntimeUiBackend(Protocol):
 
     def find_spectrum_window(self) -> SpectrumWindow | None: ...
 
+    def close_unmatched_mode_windows(self) -> list[int]: ...
+
     def ensure_spectrum_window(self) -> tuple[SpectrumWindow, bool]: ...
 
     def waiting_status(self, window: SpectrumWindow) -> str | None: ...
@@ -137,6 +139,7 @@ class WindowsLabSolutionsUi:
     """Deterministic Win32 control for the installed LabSolutions 1.13 UI."""
 
     _WM_COMMAND = 0x0111
+    _WM_CLOSE = 0x0010
     _WM_GETTEXT = 0x000D
     _WM_SETTEXT = 0x000C
     _WM_SETFOCUS = 0x0007
@@ -525,6 +528,41 @@ class WindowsLabSolutionsUi:
 
         return self._menu_window()
 
+    def close_unmatched_mode_windows(self) -> list[int]:
+        """Close stale UVNavi windows that do not expose the expected mode menu.
+
+        LabSolutions is single-instance in the deployed setup. A hidden or
+        partially initialized window from a terminal batch can otherwise
+        absorb the next ``/APP:<mode>`` launch and make the requested mode
+        appear to time out. Only windows owned by the configured executable
+        are targeted.
+        """
+
+        executable = self.runtime.executable
+
+        def matches() -> list[tuple[int, int]]:
+            found: list[tuple[int, int]] = []
+            for handle in self._windows():
+                process_id = self._wintypes.DWORD()
+                self._user32.GetWindowThreadProcessId(
+                    handle, ctypes.byref(process_id)
+                )
+                process_path = self._process_path(process_id.value)
+                if process_path is not None and _same_path(process_path, executable):
+                    found.append((handle, int(process_id.value)))
+            return found
+
+        windows = matches()
+        process_ids = sorted({process_id for _handle, process_id in windows})
+        for handle, _process_id in windows:
+            self._post(handle, self._WM_CLOSE)
+        if windows:
+            self._wait_until(
+                lambda: not matches(),
+                "stale mode window to close",
+            )
+        return process_ids
+
     def waiting_status(self, window: SpectrumWindow) -> str | None:
         for top in self._automatic_control_windows(window):
             status = self._control(top, 9012, "Static")
@@ -850,10 +888,12 @@ class LabSolutionsRuntimeManager:
                 window = self.backend.find_spectrum_window()
                 if window is None:
                     if allow_missing_completed_mode:
+                        closed_process_ids = self.backend.close_unmatched_mode_windows()
                         return {
                             "state": "RELEASED",
                             "mode": self.settings.mode,
                             "already_absent": True,
+                            "closed_unmatched_process_ids": closed_process_ids,
                         }
                     raise LabSolutionsRuntimeError(
                         f"Cannot release {self.settings.mode}: its LabSolutions "
