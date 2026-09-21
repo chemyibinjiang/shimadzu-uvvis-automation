@@ -350,6 +350,27 @@ configure_command_directory = true
             self.assertNotIn("leave", backend.calls)
             self.assertEqual(client.calls, [])
 
+    def test_terminal_mode_outside_automatic_control_is_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            settings = self._settings(root)
+            backend = FakeRuntimeBackend(settings.command_dir, waiting=False)
+            client = FakeHelloClient()
+            manager = LabSolutionsRuntimeManager(
+                settings,
+                backend=backend,
+                client_factory=lambda: client,  # type: ignore[arg-type]
+            )
+
+            released = manager.release_for_mode_switch(
+                allow_missing_completed_mode=True
+            )
+
+            self.assertTrue(released["already_outside_automatic_control"])
+            self.assertIn("close_unmatched", backend.calls)
+            self.assertNotIn("leave", backend.calls)
+            self.assertEqual(client.calls, [])
+
     def test_disconnect_failure_keeps_old_mode_in_automatic_control(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)

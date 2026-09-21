@@ -1014,6 +1014,14 @@ class LabSolutionsRuntimeManager:
                     )
                 status = self.backend.waiting_status(window)
                 if status is None:
+                    if allow_missing_completed_mode:
+                        closed_process_ids = self.backend.close_unmatched_mode_windows()
+                        return {
+                            "state": "RELEASED",
+                            "mode": self.settings.mode,
+                            "already_outside_automatic_control": True,
+                            "closed_unmatched_process_ids": closed_process_ids,
+                        }
                     raise LabSolutionsRuntimeError(
                         f"Cannot release {self.settings.mode}: Automatic Control "
                         "is not in Waiting"

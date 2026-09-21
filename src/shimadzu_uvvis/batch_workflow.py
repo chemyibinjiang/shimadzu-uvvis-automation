@@ -299,7 +299,22 @@ class SpectrumBatchController:
                     "released UV-Vis runtime record has no transition details"
                 )
             resumed = dict(transition)
+            # A persisted RELEASED marker is not proof that the old UI is still
+            # closed: an operator may reopen it between retries.  Reconcile the
+            # real desktop every time before launching the target mode.
+            release_recheck = self._runtime_manager(
+                previous_mode
+            ).release_for_mode_switch(allow_missing_completed_mode=True)
+            resumed["release_recheck"] = release_recheck
             resumed["release_reused"] = True
+            write_json_atomic(
+                self.runtime_mode_path,
+                {
+                    **record,
+                    "transition": resumed,
+                    "updated_at_utc": _utc_now(),
+                },
+            )
             return resumed
 
         if previous_mode == target_mode:

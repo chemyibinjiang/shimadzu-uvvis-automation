@@ -1653,7 +1653,7 @@ directory = "{(root / "outputs").as_posix()}"
             )
             self.assertEqual(runtime.release_calls, 0)
 
-    def test_target_start_retry_does_not_release_previous_mode_twice(self) -> None:
+    def test_target_start_retry_rechecks_that_previous_mode_stayed_closed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
             config, _ = self._fixture(root)
@@ -1689,13 +1689,17 @@ directory = "{(root / "outputs").as_posix()}"
             runtime.ensure_error = None
             controller.start(target_plan, execution_confirmed=True)
 
-            self.assertEqual(runtime.release_calls, 1)
+            self.assertEqual(runtime.release_calls, 2)
             manifest = json.loads(
                 (
                     root / "data" / "retry_photometric" / "batch-manifest.json"
                 ).read_text(encoding="utf-8")
             )
             self.assertTrue(manifest["mode_transition"]["release_reused"])
+            self.assertEqual(
+                manifest["mode_transition"]["release_recheck"]["state"],
+                "RELEASED",
+            )
 
 
 class PhotometricBatchControllerTests(unittest.TestCase):
