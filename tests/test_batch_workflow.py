@@ -1410,13 +1410,14 @@ directory = "{(root / "outputs").as_posix()}"
             )
 
             switch_events = events[event_count_before_switch:]
-            self.assertLess(
-                switch_events.index(("command", 2)),
-                switch_events.index(("command", 1)),
-            )
+            self.assertNotIn(("command", 1), switch_events)
             self.assertLess(
                 switch_events.index(("command", 2)),
                 switch_events.index(("runtime_ready", True)),
+            )
+            self.assertLess(
+                switch_events.index(("runtime_ready", True)),
+                switch_events.index(("command", 300)),
             )
             self.assertEqual(runtime.release_calls, 1)
             self.assertEqual(started["state"], "WAITING_FOR_BLANK")

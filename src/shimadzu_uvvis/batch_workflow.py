@@ -949,7 +949,7 @@ class SpectrumBatchController:
                     with client.workflow_session():
                         if (
                             self.settings.connect_before_run
-                            or mode_transition is not None
+                            and not self.settings.runtime.enabled
                         ):
                             try:
                                 connect_feedback = client.send_command(1)

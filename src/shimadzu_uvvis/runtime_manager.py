@@ -1109,15 +1109,22 @@ class LabSolutionsRuntimeManager:
                         self.backend.leave_automatic_control(window)
                     else:
                         status = self._wait_for_waiting(window)
-                        return RuntimeReady(
-                            process_id=window.process_id,
-                            window_handle=window.handle,
-                            launched=launched,
-                            command_directory=self.settings.command_dir,
-                            command_directory_changed=False,
-                            waiting_status=status,
-                            feedback=feedback,
-                        )
+                        if not allow_reconfigure:
+                            return RuntimeReady(
+                                process_id=window.process_id,
+                                window_handle=window.handle,
+                                launched=launched,
+                                command_directory=self.settings.command_dir,
+                                command_directory_changed=False,
+                                waiting_status=status,
+                                feedback=feedback,
+                            )
+                        # Batch startup normalizes even an already-Waiting UI:
+                        # leave Automatic Control, verify the physical panel is
+                        # connected/ON, close it, and enter Automatic Control
+                        # again.  This prevents a stale or manually reopened UI
+                        # from bypassing the required connection sequence.
+                        self.backend.leave_automatic_control(window)
 
                 changed = self.backend.ensure_command_directory(
                     window,
