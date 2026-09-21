@@ -1435,6 +1435,80 @@ directory = "{(root / "outputs").as_posix()}"
                 manifest["mode_transition"]["source_batch_state"], "COMPLETED"
             )
 
+    def test_completed_spectrum_batch_switches_to_time_course_in_order(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config, _ = self._fixture(root)
+            settings = load_settings(config)
+            events: list[object] = []
+            fake = FakeSpectrumClient(root / "export", event_log=events)
+            runtime = FakeRuntimeManager(root / "control", event_log=events)
+            controller = SpectrumBatchController(
+                settings,
+                client_factory=lambda: fake,  # type: ignore[arg-type]
+                runtime_manager_factory=lambda: runtime,  # type: ignore[arg-type]
+            )
+            controller.start(
+                self._plan(config, "spectrum_before_kinetics"),
+                execution_confirmed=True,
+            )
+            controller.correct_baseline(
+                "spectrum_before_kinetics", blank_loaded_confirmed=True
+            )
+            controller.measure_next(
+                "spectrum_before_kinetics",
+                sample_id="001_sample_a",
+                sample_loaded_confirmed=True,
+            )
+            controller.measure_next(
+                "spectrum_before_kinetics",
+                sample_id="002_sample_b",
+                sample_loaded_confirmed=True,
+            )
+
+            plan = build_uvvis_sample_batch_plan(
+                settings,
+                batch_id="kinetics_after_spectrum",
+                mode="time_course",
+                samples=[
+                    {"sample_name": "2号Ag NPs反应液", "sample_id": "ag_np_2_reaction"},
+                    {"sample_name": "4号Ag NPs反应液", "sample_id": "ag_np_4_reaction"},
+                ],
+                reference_name="kinetics_blank",
+                baseline_policy="new",
+                wavelength_nm=400,
+                interval_seconds=60,
+                duration_seconds=2040,
+            )
+            event_count_before_switch = len(events)
+            started = controller.start(plan, execution_confirmed=True)
+
+            switch_events = events[event_count_before_switch:]
+            self.assertNotIn(("command", 1), switch_events)
+            self.assertLess(
+                switch_events.index(("command", 2)),
+                switch_events.index(("runtime_ready", True)),
+            )
+            self.assertLess(
+                switch_events.index(("runtime_ready", True)),
+                switch_events.index(("command", 400)),
+            )
+            self.assertEqual(runtime.release_calls, 1)
+            self.assertEqual(started["state"], "WAITING_FOR_BLANK")
+            manifest = json.loads(
+                (
+                    root
+                    / "data"
+                    / "kinetics_after_spectrum"
+                    / "batch-manifest.json"
+                ).read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["mode_transition"]["from_mode"], "spectrum")
+            self.assertEqual(manifest["mode_transition"]["to_mode"], "time_course")
+            self.assertEqual(
+                manifest["mode_transition"]["source_batch_state"], "COMPLETED"
+            )
+
     def test_aborted_batch_allows_switch_and_forces_new_baseline(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
