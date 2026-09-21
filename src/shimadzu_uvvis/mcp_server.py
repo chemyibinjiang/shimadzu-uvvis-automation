@@ -39,6 +39,7 @@ from .instrument_lock import (
     guard_method_generation,
     mark_results_persisted,
     release_lease,
+    rollback_failed_preparation,
     update_lease_state,
 )
 from .access_queue import request_access, cancel_wait
@@ -1167,32 +1168,48 @@ def create_mcp_server(
             idempotency_key=idempotency_key,
         )
         guard_instrument(student_id, session_id, batch_id, **creds)
-        settings = load_settings(resolved_config)
-        plan = build_uvvis_sample_batch_plan(
-            settings,
-            batch_id=batch_id,
-            mode=mode,
-            samples=samples,
-            reference_name=reference_name,
-            baseline_policy=baseline_policy,
-            signal_type=signal_type,
-            template_name=template_name,
-            start_nm=start_nm,
-            stop_nm=stop_nm,
-            step_nm=step_nm,
-            direction=direction,
-            wavelength_nm=wavelength_nm,
-            wavelengths_nm=wavelengths_nm,
-            interval_seconds=interval_seconds,
-            duration_seconds=duration_seconds,
-            student_id=student_id,
-            experiment_name=experiment_name,
-            session_id=session_id,
-        )
-        return batch_controller(settings).start(
-            plan,
-            execution_confirmed=execution_confirmed,
-        )
+        plan: dict[str, Any] | None = None
+        try:
+            settings = load_settings(resolved_config)
+            plan = build_uvvis_sample_batch_plan(
+                settings,
+                batch_id=batch_id,
+                mode=mode,
+                samples=samples,
+                reference_name=reference_name,
+                baseline_policy=baseline_policy,
+                signal_type=signal_type,
+                template_name=template_name,
+                start_nm=start_nm,
+                stop_nm=stop_nm,
+                step_nm=step_nm,
+                direction=direction,
+                wavelength_nm=wavelength_nm,
+                wavelengths_nm=wavelengths_nm,
+                interval_seconds=interval_seconds,
+                duration_seconds=duration_seconds,
+                student_id=student_id,
+                experiment_name=experiment_name,
+                session_id=session_id,
+            )
+            return batch_controller(settings).start(
+                plan,
+                execution_confirmed=execution_confirmed,
+            )
+        except Exception:
+            manifest_exists = bool(
+                plan
+                and Path(str(plan.get("batch_directory") or ""), "batch-manifest.json").is_file()
+            )
+            if not manifest_exists:
+                rollback_failed_preparation(
+                    student_id=student_id,
+                    session_id=session_id,
+                    batch_id=batch_id,
+                    reason="start_uvvis_batch_failed_before_manifest",
+                    **creds,
+                )
+            raise
 
     @server.tool(
         name="correct_uvvis_baseline",

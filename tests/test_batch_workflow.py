@@ -234,7 +234,9 @@ class FakeRuntimeManager:
             ),
         )
 
-    def release_for_mode_switch(self) -> dict[str, object]:
+    def release_for_mode_switch(
+        self, *, allow_missing_completed_mode: bool = False
+    ) -> dict[str, object]:
         self.release_calls += 1
         if self.event_log is not None:
             self.event_log.append(("command", 2))

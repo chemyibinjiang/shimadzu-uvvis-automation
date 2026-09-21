@@ -827,7 +827,9 @@ class LabSolutionsRuntimeManager:
                 "Another process is changing the LabSolutions runtime state"
             ) from exc
 
-    def release_for_mode_switch(self) -> dict[str, object]:
+    def release_for_mode_switch(
+        self, *, allow_missing_completed_mode: bool = False
+    ) -> dict[str, object]:
         """Disconnect and leave the current mode before another mode starts."""
 
         if not self.settings.runtime.enabled:
@@ -847,6 +849,12 @@ class LabSolutionsRuntimeManager:
             ):
                 window = self.backend.find_spectrum_window()
                 if window is None:
+                    if allow_missing_completed_mode:
+                        return {
+                            "state": "RELEASED",
+                            "mode": self.settings.mode,
+                            "already_absent": True,
+                        }
                     raise LabSolutionsRuntimeError(
                         f"Cannot release {self.settings.mode}: its LabSolutions "
                         "window is not running"

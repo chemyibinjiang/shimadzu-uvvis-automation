@@ -189,6 +189,64 @@ def update_lease_state(
         return _write(path, record)
 
 
+def rollback_failed_preparation(
+    *,
+    student_id: str,
+    session_id: str,
+    batch_id: str,
+    instrument_job_id: str,
+    lease_id: str,
+    fencing_token: str,
+    request_id: str,
+    idempotency_key: str,
+    reason: str = "batch_start_failed_before_manifest",
+) -> dict[str, Any]:
+    """Unbind a batch that failed before its manifest was created.
+
+    This keeps the experiment-scoped reservation and fencing credentials, but
+    removes the phantom PREPARING batch so the same session can retry with the
+    planner's next unique batch ID.  It intentionally refuses every state
+    other than PREPARING.
+    """
+
+    path = _lock_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with _file_mutex(path):
+        record = _read(path)
+        _validate_owner_and_tokens(
+            record,
+            student_id=student_id,
+            session_id=session_id,
+            batch_id=batch_id,
+            instrument_job_id=instrument_job_id,
+            lease_id=lease_id,
+            fencing_token=fencing_token,
+            request_id=request_id,
+            idempotency_key=idempotency_key,
+        )
+        if str(record.get("batch_state") or "").upper() != "PREPARING":
+            raise RuntimeError(
+                "Only a PREPARING UV-Vis batch can be rolled back before manifest creation"
+            )
+        now = time.time()
+        record["last_failed_preparation"] = {
+            "batch_id": batch_id,
+            "reason": str(reason or "batch_start_failed_before_manifest"),
+            "at": now,
+        }
+        record.update(
+            batch_id="",
+            batch_state="",
+            mode="",
+            phase="RESERVED",
+            results_persisted=False,
+            last_seen_at=now,
+            last_request_id=request_id,
+            last_idempotency_key=idempotency_key,
+        )
+        return _write(path, record)
+
+
 def release_lease(
     *,
     student_id: str,
@@ -330,6 +388,7 @@ def guard_physical_action(
                 "student_id": student_id,
                 "session_id": session_id,
                 "batch_id": str(batch_id or "").strip(),
+                "batch_state": "PREPARING" if str(batch_id or "").strip() else "",
                 "owner_label": student_id,
                 "acquired_at": time.time(),
                 "last_seen_at": time.time(),

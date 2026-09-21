@@ -317,7 +317,13 @@ class SpectrumBatchController:
             )
 
         released_at = _utc_now()
-        release = self._runtime_manager(previous_mode).release_for_mode_switch()
+        # The persisted source manifest was verified terminal above. If the
+        # old LabSolutions mode is already closed, treat it as released and
+        # launch the requested mode directly instead of requiring an operator
+        # to reopen the old application merely so automation can close it.
+        release = self._runtime_manager(previous_mode).release_for_mode_switch(
+            allow_missing_completed_mode=True
+        )
         transition = {
             "from_mode": previous_mode,
             "to_mode": target_mode,

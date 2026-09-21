@@ -295,6 +295,28 @@ configure_command_directory = true
             self.assertNotIn("leave", backend.calls)
             self.assertEqual(client.calls, [])
 
+    def test_verified_completed_mode_can_treat_a_missing_window_as_released(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            settings = self._settings(root)
+            backend = FakeRuntimeBackend(settings.command_dir, waiting=True)
+            backend.window_available = False
+            client = FakeHelloClient()
+            manager = LabSolutionsRuntimeManager(
+                settings,
+                backend=backend,
+                client_factory=lambda: client,  # type: ignore[arg-type]
+            )
+
+            released = manager.release_for_mode_switch(
+                allow_missing_completed_mode=True
+            )
+
+            self.assertEqual(released["state"], "RELEASED")
+            self.assertTrue(released["already_absent"])
+            self.assertNotIn("ensure_window", backend.calls)
+            self.assertEqual(client.calls, [])
+
     def test_mode_switch_release_requires_automatic_control_waiting(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             root = Path(temporary_directory)
