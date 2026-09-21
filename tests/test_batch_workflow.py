@@ -1473,6 +1473,50 @@ directory = "{(root / "outputs").as_posix()}"
                 "measurement_mode_changed",
             )
 
+    def test_terminal_runtime_record_allows_switch_when_old_manifest_was_archived(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config, _ = self._fixture(root)
+            settings = load_settings(config)
+            fake = FakeSpectrumClient(root / "export")
+            runtime = FakeRuntimeManager(root / "control")
+            controller = SpectrumBatchController(
+                settings,
+                client_factory=lambda: fake,  # type: ignore[arg-type]
+                runtime_manager_factory=lambda: runtime,  # type: ignore[arg-type]
+            )
+            controller.start(
+                self._plan(config, "completed_then_archived"),
+                execution_confirmed=True,
+            )
+            controller.correct_baseline(
+                "completed_then_archived", blank_loaded_confirmed=True
+            )
+            controller.measure_next(
+                "completed_then_archived",
+                sample_id="001_sample_a",
+                sample_loaded_confirmed=True,
+            )
+            controller.measure_next(
+                "completed_then_archived",
+                sample_id="002_sample_b",
+                sample_loaded_confirmed=True,
+            )
+            (root / "data" / "completed_then_archived" / "batch-manifest.json").unlink()
+
+            started = controller.start(
+                self._plan(
+                    config,
+                    "photometric_after_archive",
+                    mode="photometric",
+                ),
+                execution_confirmed=True,
+            )
+
+            self.assertEqual(started["state"], "WAITING_FOR_BLANK")
+            self.assertEqual(runtime.release_calls, 1)
+            self.assertTrue(started["mode_transition"]["source_manifest_missing"])
+
     def test_failed_or_recovery_batch_cannot_be_mode_switch_source(self) -> None:
         for failure_kind, expected_state in (
             ("reject", "FAILED"),

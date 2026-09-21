@@ -234,7 +234,12 @@ class SpectrumBatchController:
             },
         )
 
-    def _runtime_manifest(self, record: Mapping[str, Any]) -> dict[str, Any]:
+    def _runtime_manifest(
+        self,
+        record: Mapping[str, Any],
+        *,
+        allow_missing_terminal: bool = False,
+    ) -> dict[str, Any] | None:
         batch_id = self._batch_id(str(record.get("batch_id") or ""))
         raw_path = str(record.get("manifest_path") or "").strip()
         if not raw_path:
@@ -251,6 +256,12 @@ class SpectrumBatchController:
             or manifest_path.parent.name != batch_id
         ):
             raise SpectrumBatchError("UV-Vis runtime mode manifest path is invalid")
+        if (
+            allow_missing_terminal
+            and not manifest_path.is_file()
+            and record.get("batch_state") in _MODE_SWITCH_SOURCE_STATES
+        ):
+            return None
         manifest = self._read_json(manifest_path)
         if manifest.get("batch_id") != batch_id:
             raise SpectrumBatchError(
@@ -301,20 +312,24 @@ class SpectrumBatchController:
                 "COMPLETED or ABORTED; "
                 f"current state is {batch_state!r}"
             )
-        previous_manifest = self._runtime_manifest(record)
-        if previous_manifest.get("mode") != previous_mode:
-            raise SpectrumBatchError(
-                "UV-Vis runtime mode does not match the previous batch manifest"
-            )
-        manifest_state = previous_manifest.get("state")
-        if (
-            manifest_state != batch_state
-            or manifest_state not in _MODE_SWITCH_SOURCE_STATES
-        ):
-            raise SpectrumBatchError(
-                "previous UV-Vis batch manifest must be exactly COMPLETED or ABORTED "
-                "before switching modes"
-            )
+        previous_manifest = self._runtime_manifest(
+            record,
+            allow_missing_terminal=True,
+        )
+        if previous_manifest is not None:
+            if previous_manifest.get("mode") != previous_mode:
+                raise SpectrumBatchError(
+                    "UV-Vis runtime mode does not match the previous batch manifest"
+                )
+            manifest_state = previous_manifest.get("state")
+            if (
+                manifest_state != batch_state
+                or manifest_state not in _MODE_SWITCH_SOURCE_STATES
+            ):
+                raise SpectrumBatchError(
+                    "previous UV-Vis batch manifest must be exactly COMPLETED or ABORTED "
+                    "before switching modes"
+                )
 
         released_at = _utc_now()
         # The persisted source manifest was verified terminal above. If the
@@ -329,6 +344,7 @@ class SpectrumBatchController:
             "to_mode": target_mode,
             "source_batch_id": record.get("batch_id"),
             "source_batch_state": batch_state,
+            "source_manifest_missing": previous_manifest is None,
             "released_at_utc": released_at,
             "release": release,
             "release_reused": False,
