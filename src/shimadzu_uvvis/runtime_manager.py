@@ -919,11 +919,13 @@ class LabSolutionsRuntimeManager:
                     raise LabSolutionsRuntimeError(
                         f"{self.settings.mode} did not leave Automatic Control"
                     )
+                closed_process_ids = self.backend.close_unmatched_mode_windows()
                 return {
                     "state": "RELEASED",
                     "mode": self.settings.mode,
                     "process_id": window.process_id,
                     "window_handle": window.handle,
+                    "closed_process_ids": closed_process_ids,
                     "waiting_status_before_release": waiting_status_before_release,
                     "waiting_status_after_hello": waiting_status_after_hello,
                     "waiting_status_after_disconnect": waiting_status_after_disconnect,

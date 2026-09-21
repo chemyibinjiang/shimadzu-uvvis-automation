@@ -277,6 +277,7 @@ configure_command_directory = true
             self.assertEqual(released["mode"], "spectrum")
             self.assertEqual(client.calls, [(0, 3.0), (2, settings.timeout_seconds)])
             self.assertIn("leave", backend.calls)
+            self.assertIn("close_unmatched", backend.calls)
             self.assertIsNone(backend.status)
 
     def test_mode_switch_release_does_not_launch_a_missing_old_mode(self) -> None:
