@@ -1196,19 +1196,27 @@ def create_mcp_server(
                 plan,
                 execution_confirmed=execution_confirmed,
             )
-        except Exception:
+        except Exception as start_error:
             manifest_exists = bool(
                 plan
                 and Path(str(plan.get("batch_directory") or ""), "batch-manifest.json").is_file()
             )
             if not manifest_exists:
-                rollback_failed_preparation(
-                    student_id=student_id,
-                    session_id=session_id,
-                    batch_id=batch_id,
-                    reason="start_uvvis_batch_failed_before_manifest",
-                    **creds,
-                )
+                try:
+                    rollback_failed_preparation(
+                        student_id=student_id,
+                        session_id=session_id,
+                        batch_id=batch_id,
+                        reason="start_uvvis_batch_failed_before_manifest",
+                        **creds,
+                    )
+                except Exception as rollback_error:
+                    # Preserve the actionable startup failure.  Cleanup can be
+                    # inapplicable in diagnostics where lease enforcement is
+                    # disabled, and must never mask the root cause.
+                    start_error.add_note(
+                        f"UV-Vis preparation rollback also failed: {rollback_error}"
+                    )
             raise
 
     @server.tool(

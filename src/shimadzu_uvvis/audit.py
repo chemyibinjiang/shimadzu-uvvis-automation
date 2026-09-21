@@ -39,9 +39,11 @@ def _replace_with_retry(source: Path, destination: Path) -> None:
 def write_json_atomic(path: str | Path, payload: Mapping[str, Any]) -> Path:
     destination = Path(path)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(
-        f".{destination.name}.{uuid.uuid4().hex}.tmp"
-    )
+    # Keep the sibling name deliberately short.  Student/session/batch paths can
+    # already be close to the legacy Windows MAX_PATH boundary, and repeating the
+    # full destination name plus a UUID made an otherwise valid manifest fail at
+    # the temporary-file write.
+    temporary = destination.with_name(f".tmp-{uuid.uuid4().hex[:12]}")
     try:
         temporary.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",

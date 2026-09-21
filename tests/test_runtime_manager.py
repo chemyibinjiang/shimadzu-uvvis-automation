@@ -78,6 +78,10 @@ class FakeRuntimeBackend:
         self.command_dir = expected
         return True
 
+    def connect_instrument(self, window: SpectrumWindow) -> bool:
+        self.calls.append("connect_instrument")
+        return True
+
     def enter_automatic_control(self, window: SpectrumWindow) -> str:
         self.calls.append("enter")
         self.status = "Automatic Control - Waiting"
@@ -158,6 +162,10 @@ configure_command_directory = true
             self.assertEqual(ready.command_directory, settings.command_dir)
             self.assertEqual(client.calls, [(0, 3.0)])
             self.assertIn(("directory", True), backend.calls)
+            self.assertLess(
+                backend.calls.index("connect_instrument"),
+                backend.calls.index("enter"),
+            )
             self.assertIn("enter", backend.calls)
 
     def test_existing_waiting_state_still_requires_hello(self) -> None:
@@ -177,6 +185,7 @@ configure_command_directory = true
             self.assertEqual(ready.waiting_status, "Automatic Control - Waiting")
             self.assertEqual(client.calls, [(0, 3.0)])
             self.assertNotIn("enter", backend.calls)
+            self.assertNotIn("connect_instrument", backend.calls)
             self.assertFalse(
                 any(
                     isinstance(call, tuple) and call[0] == "directory"

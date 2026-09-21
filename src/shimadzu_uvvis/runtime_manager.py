@@ -121,6 +121,8 @@ class RuntimeUiBackend(Protocol):
         allow_change: bool,
     ) -> bool: ...
 
+    def connect_instrument(self, window: SpectrumWindow) -> bool: ...
+
     def enter_automatic_control(self, window: SpectrumWindow) -> str: ...
 
 
@@ -151,6 +153,7 @@ class WindowsLabSolutionsUi:
     _TCM_GETCURSEL = 0x130B
     _SMTO_ABORTIFHUNG = 0x0002
     _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    _SW_SHOW = 5
 
     def __init__(self, settings: ControlSettings) -> None:
         if os.name != "nt":
@@ -581,6 +584,116 @@ class WindowsLabSolutionsUi:
             and self._control(top, 9012, "Static") is not None
         ]
 
+    def _instrument_panel(self, window: SpectrumWindow) -> int | None:
+        matches: list[int] = []
+        for handle in self._windows(process_id=window.process_id):
+            spectrum_panel = (
+                self._control(handle, 11002, "Static") is not None
+                and self._control(handle, 1638, "Button") is not None
+            )
+            photometric_panel = (
+                self._control(handle, 18002, "Static") is not None
+                and self._control(handle, 1095, "Button") is not None
+            )
+            if spectrum_panel or photometric_panel:
+                matches.append(handle)
+        if len(matches) > 1:
+            raise LabSolutionsRuntimeError(
+                f"Multiple Instrument Control panels matched: {matches}"
+            )
+        return matches[0] if matches else None
+
+    def _panel_connected(self, panel: int) -> bool:
+        if self.settings.mode == "photometric":
+            wavelength = self._control(panel, 18002, "Static")
+            editor = self._control(panel, 1095, "Button")
+        else:
+            wavelength = self._control(panel, 11002, "Static")
+            editor = self._control(panel, 1638, "Button")
+        if wavelength is None or editor is None:
+            return False
+        value = self._window_text(wavelength).strip()
+        return bool(
+            value
+            and not value.startswith("-")
+            and self._user32.IsWindowEnabled(editor)
+        )
+
+    def _initialization_dialog(self, process_id: int) -> int | None:
+        matches = [
+            handle
+            for handle in self._windows(process_id=process_id)
+            if self._user32.IsWindowVisible(handle)
+            and self._user32.IsWindowEnabled(handle)
+            and self._window_text(handle).strip().casefold().startswith(
+                ("uv-2700", "uv-2700i")
+            )
+        ]
+        if len(matches) > 1:
+            raise LabSolutionsRuntimeError(
+                f"Multiple UV-2700 initialization dialogs matched: {matches}"
+            )
+        return matches[0] if matches else None
+
+    def connect_instrument(self, window: SpectrumWindow) -> bool:
+        """Make the new mode show a verified ON connection before automation."""
+
+        if self.settings.mode not in {"spectrum", "photometric"}:
+            return False
+        panel = self._instrument_panel(window)
+        if panel is not None:
+            self._user32.ShowWindow(panel, self._SW_SHOW)
+            self._wait_until(
+                lambda: self._user32.IsWindowVisible(panel),
+                "Instrument Control panel to show",
+            )
+            if self._panel_connected(panel):
+                return False
+
+        command = self._find_menu_command(
+            window.handle,
+            ("\u4eea\u5668", "instrument"),
+            ("\u8fde\u63a5", "connect"),
+        )
+        self._post(window.handle, self._WM_COMMAND, command)
+        panel_value = self._wait_until(
+            lambda: self._instrument_panel(window),
+            "Instrument Control panel",
+            timeout_seconds=self.runtime.startup_timeout_seconds,
+        )
+        assert isinstance(panel_value, int)
+        panel = panel_value
+        self._user32.ShowWindow(panel, self._SW_SHOW)
+        initialization = self._wait_until(
+            lambda: self._initialization_dialog(window.process_id)
+            or (panel if self._panel_connected(panel) else None),
+            "UV-2700 connection to become ON",
+            timeout_seconds=self.runtime.startup_timeout_seconds,
+        )
+        assert isinstance(initialization, int)
+        if initialization != panel:
+            ok = self._control(initialization, 1, "Button")
+            if ok is None:
+                raise LabSolutionsRuntimeError(
+                    "UV-2700 initialization OK button was not found"
+                )
+            self._wait_until(
+                lambda: self._user32.IsWindowEnabled(ok),
+                "UV-2700 initialization to complete",
+                timeout_seconds=self.runtime.startup_timeout_seconds,
+            )
+            self._post(ok, self._BM_CLICK)
+            self._wait_until(
+                lambda: not self._user32.IsWindow(initialization),
+                "UV-2700 initialization dialog to close",
+            )
+        self._wait_until(
+            lambda: self._panel_connected(panel),
+            "Instrument Control connection to become ON",
+            timeout_seconds=self.runtime.startup_timeout_seconds,
+        )
+        return True
+
     def leave_automatic_control(self, window: SpectrumWindow) -> None:
         if self.waiting_status(window) is None:
             return
@@ -1006,6 +1119,7 @@ class LabSolutionsRuntimeManager:
                         and self.settings.runtime.configure_command_directory
                     ),
                 )
+                self.backend.connect_instrument(window)
                 status = self.backend.enter_automatic_control(window)
                 try:
                     feedback = self._hello()

@@ -11,6 +11,25 @@ from shimadzu_uvvis.audit import write_json_atomic
 
 
 class AtomicJsonTests(unittest.TestCase):
+    def test_temporary_name_stays_short_for_deep_windows_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            destination = Path(temporary_directory) / "batch-manifest.json"
+            observed: list[Path] = []
+            real_replace = os.replace
+
+            def capture_replace(source: Path, target: Path) -> None:
+                observed.append(Path(source))
+                real_replace(source, target)
+
+            with patch(
+                "shimadzu_uvvis.audit.os.replace", side_effect=capture_replace
+            ):
+                write_json_atomic(destination, {"state": "STARTING"})
+
+            self.assertEqual(len(observed), 1)
+            self.assertLessEqual(len(observed[0].name), 17)
+            self.assertEqual(observed[0].parent, destination.parent)
+
     def test_transient_permission_error_is_retried(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             destination = Path(temporary_directory) / "manifest.json"
