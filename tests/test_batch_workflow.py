@@ -41,6 +41,7 @@ class FakeSpectrumClient:
         self.time_course_duration_seconds = 120.0
         self.fail_command: int | None = None
         self.reject_command: int | None = None
+        self.missing_method_once = False
         self.already_connected = False
         self.fail_export = False
 
@@ -64,6 +65,22 @@ class FakeSpectrumClient:
                             "Command": str(command),
                             "Return": "-3002",
                             "Error": "already connected",
+                        }
+                    ),
+                )
+            )
+        if command == 21 and self.missing_method_once:
+            self.missing_method_once = False
+            raise LabSolutionsCommandError(
+                Feedback(
+                    command=command,
+                    return_code=-1001,
+                    error="No parameter file loaded",
+                    fields=MappingProxyType(
+                        {
+                            "Command": str(command),
+                            "Return": "-1001",
+                            "Error": "No parameter file loaded",
                         }
                     ),
                 )
@@ -971,6 +988,42 @@ directory = "{(root / "outputs").as_posix()}"
                     reason="cannot continue",
                     abort_confirmed=True,
                 )
+
+    def test_baseline_reloads_spectrum_method_once_after_minus_1001(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config, _ = self._fixture(root)
+            settings = load_settings(config)
+            fake = FakeSpectrumClient(root / "export")
+            runtime = FakeRuntimeManager(root / "control")
+            runtime.dismiss_prompt = True
+            controller = SpectrumBatchController(
+                settings,
+                client_factory=lambda: fake,  # type: ignore[arg-type]
+                runtime_manager_factory=lambda: runtime,  # type: ignore[arg-type]
+            )
+            controller.start(
+                self._plan(config, "batch_reload_missing_method"),
+                execution_confirmed=True,
+            )
+            fake.missing_method_once = True
+
+            corrected = controller.correct_baseline(
+                "batch_reload_missing_method", blank_loaded_confirmed=True
+            )
+
+            self.assertEqual(corrected["state"], "WAITING_FOR_SAMPLE")
+            self.assertEqual(
+                [command for command, _parameters in fake.commands],
+                [100, 21, 100, 21],
+            )
+            manifest = controller._read_json(
+                controller._manifest_path("batch_reload_missing_method")
+            )
+            self.assertIn(
+                "baseline_method_reloaded",
+                {event["type"] for event in manifest["events"]},
+            )
 
     def test_invalid_spectrum_export_requires_result_recovery(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

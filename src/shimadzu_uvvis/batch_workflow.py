@@ -1091,9 +1091,8 @@ class SpectrumBatchController:
                     )
                 methods = self._validate_methods(manifest)
                 mode = str(manifest["mode"])
-                runtime_ready = self._runtime_manager(mode).ensure_ready(
-                    allow_reconfigure=False
-                )
+                runtime_manager = self._runtime_manager(mode)
+                runtime_ready = runtime_manager.ensure_ready(allow_reconfigure=False)
                 manifest["runtime"] = self._runtime_record(runtime_ready)
                 self._append_feedback(
                     manifest,
@@ -1111,7 +1110,52 @@ class SpectrumBatchController:
                 correction_completed = False
                 try:
                     with client.workflow_session():
-                        feedback = client.send_command(21, CorrectionType=1)
+                        try:
+                            feedback = client.send_command(21, CorrectionType=1)
+                        except LabSolutionsCommandError as exc:
+                            # LabSolutions can keep Automatic Control alive while
+                            # losing the Spectrum parameter file (for example after
+                            # the mode window is recreated between batch start and
+                            # the operator's blank confirmation).  Command 21 then
+                            # fails before touching the instrument with Return=-1001.
+                            # Reload the verified batch method once and retry the
+                            # still-authorized blank correction; never retry other
+                            # instrument failures or measurement commands.
+                            if mode != "spectrum" or exc.feedback.return_code != -1001:
+                                raise
+                            self._append_feedback(
+                                manifest,
+                                exc.feedback,
+                                phase="baseline_correction:method_not_loaded",
+                            )
+                            self._append_feedback(
+                                manifest,
+                                client.send_command(
+                                    100, ParameterFileName=methods[0]
+                                ),
+                                phase="baseline_correction:method_reload",
+                            )
+                            prompt_dismissed = runtime_manager.dismiss_parameter_change_baseline_prompt(
+                                wait_seconds=min(
+                                    2.0,
+                                    self.settings.runtime.ui_timeout_seconds,
+                                )
+                            )
+                            if prompt_dismissed:
+                                manifest["events"].append(
+                                    {
+                                        "type": "baseline_method_reload_prompt_declined",
+                                        "at_utc": _utc_now(),
+                                    }
+                                )
+                            manifest["events"].append(
+                                {
+                                    "type": "baseline_method_reloaded",
+                                    "at_utc": _utc_now(),
+                                }
+                            )
+                            self._write_manifest(manifest)
+                            feedback = client.send_command(21, CorrectionType=1)
                         correction_completed = True
                         self._append_feedback(
                             manifest, feedback, phase="baseline_correction"
