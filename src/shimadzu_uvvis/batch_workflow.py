@@ -1733,14 +1733,60 @@ class SpectrumBatchController:
                 if self.settings.export_dir is None:
                     raise SpectrumBatchError("export.directory must be configured")
 
-                runtime_ready = self._runtime_manager(mode).ensure_ready(
-                    allow_reconfigure=False
-                )
+                runtime_manager = self._runtime_manager(mode)
+                runtime_ready = runtime_manager.ensure_ready(allow_reconfigure=False)
                 baseline_pid = manifest["baseline"]["record"].get("runtime_process_id")
                 if baseline_pid is None:
                     baseline_pid = (manifest.get("runtime") or {}).get("process_id")
                 if baseline_pid is not None and baseline_pid != runtime_ready.process_id:
-                    raise SpectrumBatchError("LabSolutions restarted after baseline correction; start a new batch and correct the blank before measuring")
+                    # A baseline belongs to the exact LabSolutions runtime that
+                    # acquired it.  Never scan a loaded sample after that process
+                    # has disappeared.  Recover the same batch to the blank gate,
+                    # reload its verified method into the replacement runtime,
+                    # and let the caller explicitly request a new blank correction.
+                    invalidated_record = dict(manifest["baseline"]["record"])
+                    manifest["runtime"] = self._runtime_record(runtime_ready)
+                    self._append_feedback(
+                        manifest,
+                        runtime_ready.feedback,
+                        phase=f"runtime_ready:sample:{expected_id}:replacement",
+                    )
+                    client = self._client(mode)
+                    if mode == "spectrum":
+                        with client.workflow_session():
+                            self._append_feedback(
+                                manifest,
+                                client.send_command(
+                                    100, ParameterFileName=methods[0]
+                                ),
+                                phase="runtime_restart:method_reload",
+                            )
+                        runtime_manager.dismiss_parameter_change_baseline_prompt(
+                            wait_seconds=min(
+                                2.0,
+                                self.settings.runtime.ui_timeout_seconds,
+                            )
+                        )
+                    manifest["baseline"] = {
+                        "policy": "new",
+                        "status": "PENDING",
+                        "record": None,
+                        "invalidated_record": invalidated_record,
+                        "invalidated_reason": "runtime_process_changed",
+                    }
+                    manifest["state"] = "WAITING_FOR_BLANK"
+                    manifest["events"].append(
+                        {
+                            "type": "baseline_invalidated_runtime_restart",
+                            "previous_process_id": baseline_pid,
+                            "replacement_process_id": runtime_ready.process_id,
+                            "sample_id": expected_id,
+                            "at_utc": _utc_now(),
+                        }
+                    )
+                    self._write_manifest(manifest)
+                    self._set_active(manifest)
+                    return self._status(manifest)
                 manifest["runtime"] = self._runtime_record(runtime_ready)
                 self._append_feedback(
                     manifest,

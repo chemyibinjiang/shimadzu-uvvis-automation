@@ -514,10 +514,31 @@ class WindowsLabSolutionsUi:
             raise LabSolutionsRuntimeError(
                 f"LabSolutions executable does not exist: {executable}"
             )
-        subprocess.Popen(
-            [str(executable), *self.runtime.arguments],
-            cwd=str(executable.parent),
-        )
+        popen_kwargs: dict[str, object] = {"cwd": str(executable.parent)}
+        if os.name == "nt":
+            # The runtime manager is commonly hosted by a short-lived MCP stdio
+            # process.  Without breaking away from that worker's Windows job,
+            # UVNavi can be terminated as soon as the tool call returns.  The
+            # measurement application must stay alive for the whole batch (blank
+            # correction plus every sample); mode switching closes it explicitly.
+            popen_kwargs["creationflags"] = (
+                subprocess.DETACHED_PROCESS | subprocess.CREATE_BREAKAWAY_FROM_JOB
+            )
+        try:
+            subprocess.Popen(
+                [str(executable), *self.runtime.arguments],
+                **popen_kwargs,
+            )
+        except OSError as exc:
+            if os.name != "nt" or getattr(exc, "winerror", None) != 5:
+                raise
+            # Some interactive hosts do not permit job breakaway.  Keep the UI
+            # detached from the worker console even on those installations.
+            popen_kwargs["creationflags"] = subprocess.DETACHED_PROCESS
+            subprocess.Popen(
+                [str(executable), *self.runtime.arguments],
+                **popen_kwargs,
+            )
         window = self._wait_until(
             self._menu_window,
             f"{self.settings.mode} main window",

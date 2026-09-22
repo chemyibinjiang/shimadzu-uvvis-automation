@@ -229,6 +229,7 @@ class FakeRuntimeManager:
         self.dismiss_prompt = False
         self.prompt_error: Exception | None = None
         self.ensure_error: Exception | None = None
+        self.process_id = 1234
 
     def ensure_ready(self, *, allow_reconfigure: bool) -> RuntimeReady:
         self.calls.append(allow_reconfigure)
@@ -237,7 +238,7 @@ class FakeRuntimeManager:
         if self.ensure_error is not None:
             raise self.ensure_error
         return RuntimeReady(
-            process_id=1234,
+            process_id=self.process_id,
             window_handle=5678,
             launched=False,
             command_directory=self.command_dir,
@@ -1023,6 +1024,50 @@ directory = "{(root / "outputs").as_posix()}"
             self.assertIn(
                 "baseline_method_reloaded",
                 {event["type"] for event in manifest["events"]},
+            )
+
+    def test_runtime_restart_invalidates_baseline_without_scanning_sample(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            config, _ = self._fixture(root)
+            settings = load_settings(config)
+            fake = FakeSpectrumClient(root / "export")
+            runtime = FakeRuntimeManager(root / "control")
+            controller = SpectrumBatchController(
+                settings,
+                client_factory=lambda: fake,  # type: ignore[arg-type]
+                runtime_manager_factory=lambda: runtime,  # type: ignore[arg-type]
+            )
+            controller.start(
+                self._plan(config, "batch_runtime_restart"),
+                execution_confirmed=True,
+            )
+            controller.correct_baseline(
+                "batch_runtime_restart", blank_loaded_confirmed=True
+            )
+            runtime.process_id = 4321
+
+            result = controller.measure_next(
+                "batch_runtime_restart",
+                sample_id="001_sample_a",
+                sample_loaded_confirmed=True,
+            )
+
+            self.assertEqual(result["state"], "WAITING_FOR_BLANK")
+            self.assertEqual(result["baseline"]["status"], "PENDING")
+            self.assertEqual(result["samples"][0]["status"], "PENDING")
+            self.assertNotIn(110, [command for command, _ in fake.commands])
+            self.assertNotIn(111, [command for command, _ in fake.commands])
+            manifest = controller._read_json(
+                controller._manifest_path("batch_runtime_restart")
+            )
+            self.assertEqual(
+                manifest["baseline"]["invalidated_reason"],
+                "runtime_process_changed",
+            )
+            self.assertEqual(
+                manifest["events"][-1]["type"],
+                "baseline_invalidated_runtime_restart",
             )
 
     def test_invalid_spectrum_export_requires_result_recovery(self) -> None:
