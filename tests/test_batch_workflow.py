@@ -1503,6 +1503,7 @@ directory = "{(root / "outputs").as_posix()}"
                     config,
                     "photometric_after_completed",
                     mode="photometric",
+                    baseline_policy="reuse_valid",
                 ),
                 execution_confirmed=True,
             )
@@ -1518,7 +1519,8 @@ directory = "{(root / "outputs").as_posix()}"
                 switch_events.index(("command", 300)),
             )
             self.assertEqual(runtime.release_calls, 1)
-            self.assertEqual(started["state"], "WAITING_FOR_BLANK")
+            self.assertEqual(started["state"], "WAITING_FOR_SAMPLE")
+            self.assertEqual(started["baseline"]["status"], "REUSED")
             manifest = json.loads(
                 (
                     root
@@ -1531,6 +1533,16 @@ directory = "{(root / "outputs").as_posix()}"
             self.assertEqual(manifest["mode_transition"]["to_mode"], "photometric")
             self.assertEqual(
                 manifest["mode_transition"]["source_batch_state"], "COMPLETED"
+            )
+            self.assertEqual(
+                manifest["baseline"]["record"]["carried_forward_from"]["mode"],
+                "spectrum",
+            )
+            self.assertTrue(
+                any(
+                    event.get("type") == "baseline_carried_forward"
+                    for event in manifest["events"]
+                )
             )
 
     def test_completed_spectrum_batch_switches_to_time_course_in_order(self) -> None:
@@ -1643,7 +1655,7 @@ directory = "{(root / "outputs").as_posix()}"
             self.assertEqual(started["baseline"]["policy"], "new")
             self.assertEqual(
                 started["baseline"]["reuse_rejected_reason"],
-                "measurement_mode_changed",
+                "baseline_context_changed",
             )
 
     def test_terminal_runtime_record_allows_switch_when_old_manifest_was_archived(self) -> None:

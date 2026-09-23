@@ -351,6 +351,16 @@ scan_speed_nm_per_min = 600.0
             root = Path(temporary_directory)
             config, _ = self._fixture(root)
             calls: list[object] = []
+            transitions: list[str] = []
+
+            class StubController:
+                def prepare_mode_transition(self, mode: str):  # type: ignore[no-untyped-def]
+                    transitions.append(mode)
+                    return {
+                        "state": "RELEASED",
+                        "from_mode": "photometric",
+                        "to_mode": mode,
+                    }
 
             class StubMethodManager:
                 def generate(self, request, *, template_name=None):  # type: ignore[no-untyped-def]
@@ -364,6 +374,7 @@ scan_speed_nm_per_min = 600.0
             stub = StubMethodManager()
             server = create_mcp_server(
                 config,
+                batch_controller_factory=lambda settings: StubController(),  # type: ignore[arg-type,return-value]
                 method_manager_factory=lambda settings: stub,  # type: ignore[arg-type,return-value]
             )
 
@@ -386,6 +397,8 @@ scan_speed_nm_per_min = 600.0
             self.assertEqual(request.parameters["step_nm"], 5.0)
             self.assertEqual(calls[1], "spectrum_absorbance")
             self.assertEqual(structured["status"], "generated")
+            self.assertEqual(transitions, ["spectrum"])
+            self.assertEqual(structured["mode_transition"]["to_mode"], "spectrum")
 
     def test_ten_nm_spectrum_plan_reports_exact_photometric_alternative(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:

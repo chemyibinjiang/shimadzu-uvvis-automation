@@ -376,6 +376,27 @@ class SpectrumBatchController:
         )
         return transition
 
+    def prepare_mode_transition(
+        self, target_mode: MeasurementMode
+    ) -> dict[str, Any] | None:
+        """Release a completed prior mode before method generation starts.
+
+        Method generation may need to launch the target LabSolutions application
+        before a new batch manifest exists.  Persisting the release marker here
+        lets the later ``start`` call safely resume the same transition instead
+        of leaving the completed mode open and colliding with UVNavi's
+        single-instance behavior.
+        """
+
+        self.data_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            with self._lock():
+                return self._prepare_mode_transition(target_mode)
+        except FileLockTimeoutError as exc:
+            raise SpectrumBatchError(
+                "another process is changing the UV-Vis batch state"
+            ) from exc
+
     def _set_active(self, manifest: Mapping[str, Any]) -> None:
         write_json_atomic(
             self.active_batch_path,
@@ -761,6 +782,64 @@ class SpectrumBatchController:
             )
         return baseline
 
+    def _carried_forward_baseline(
+        self,
+        *,
+        mode: MeasurementMode,
+        methods: list[Path],
+        method_sha256s: list[str],
+        reference_name: str,
+        mode_transition: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Carry a verified blank correction from Spectrum into Photometric.
+
+        The Fe(III) workflow keeps the same reference cuvette in place after
+        determining lambda-max, then changes only the LabSolutions measurement
+        application.  The instrument correction remains valid across that
+        completed Spectrum -> Photometric transition.  Record the target method
+        context so all later sample guards still validate the exact active
+        Photometric methods.
+        """
+
+        if (
+            mode_transition.get("from_mode") != "spectrum"
+            or mode_transition.get("to_mode") != "photometric"
+            or mode_transition.get("source_batch_state") != "COMPLETED"
+        ):
+            raise SpectrumBatchError(
+                "stored baseline cannot be carried across this measurement mode transition"
+            )
+        previous = self._read_json(self.baseline_path)
+        if previous.get("mode") != "spectrum":
+            raise SpectrumBatchError(
+                "stored baseline does not belong to the completed Spectrum batch"
+            )
+        if previous.get("reference_name") != reference_name:
+            raise SpectrumBatchError(
+                "stored baseline cannot be carried because the reference changed"
+            )
+        if not previous.get("completed_at_utc"):
+            raise SpectrumBatchError("stored baseline has no completion record")
+        return {
+            "schema_version": 1,
+            "mode": mode,
+            "method_file": str(methods[0]),
+            "method_sha256": method_sha256s[0],
+            "method_files": [str(method) for method in methods],
+            "method_sha256s": method_sha256s,
+            "reference_name": reference_name,
+            "correction_type": previous.get("correction_type", 1),
+            "runtime_process_id": None,
+            "completed_at_utc": previous["completed_at_utc"],
+            "carried_forward_from": {
+                "mode": previous.get("mode"),
+                "method_files": previous.get("method_files"),
+                "method_sha256s": previous.get("method_sha256s"),
+                "source_batch_id": mode_transition.get("source_batch_id"),
+                "completed_at_utc": previous.get("completed_at_utc"),
+            },
+        }
+
     def _validate_sample_baseline(self, manifest: Mapping[str, Any], methods: list[Path]) -> None:
         """Every sample must use the completed baseline for this exact method/reference."""
         baseline = manifest.get("baseline") or {}
@@ -807,17 +886,23 @@ class SpectrumBatchController:
                 reused_baseline: dict[str, Any] | None = None
                 baseline_reuse_rejected_reason: str | None = None
                 baseline_reuse_rejected_detail: str | None = None
-                if mode_transition is not None and baseline_policy == "reuse_valid":
-                    baseline_policy = "new"
-                    baseline_reuse_rejected_reason = "measurement_mode_changed"
                 if baseline_policy == "reuse_valid":
                     try:
-                        reused_baseline = self._reusable_baseline(
-                            mode=mode,
-                            methods=methods,
-                            method_sha256s=method_sha256s,
-                            reference_name=reference_name,
-                        )
+                        if mode_transition is not None:
+                            reused_baseline = self._carried_forward_baseline(
+                                mode=mode,
+                                methods=methods,
+                                method_sha256s=method_sha256s,
+                                reference_name=reference_name,
+                                mode_transition=mode_transition,
+                            )
+                        else:
+                            reused_baseline = self._reusable_baseline(
+                                mode=mode,
+                                methods=methods,
+                                method_sha256s=method_sha256s,
+                                reference_name=reference_name,
+                            )
                     except SpectrumBatchError as exc:
                         baseline_policy = "new"
                         baseline_reuse_rejected_reason = "baseline_context_changed"
@@ -938,6 +1023,22 @@ class SpectrumBatchController:
                             if baseline_reuse_rejected_reason is not None
                             else []
                         ),
+                        *(
+                            [
+                                {
+                                    "type": "baseline_carried_forward",
+                                    "from_mode": mode_transition["from_mode"],
+                                    "to_mode": mode_transition["to_mode"],
+                                    "source_batch_id": mode_transition.get(
+                                        "source_batch_id"
+                                    ),
+                                    "at_utc": now,
+                                }
+                            ]
+                            if reused_baseline is not None
+                            and mode_transition is not None
+                            else []
+                        ),
                     ],
                     "last_error": None,
                 }
@@ -1044,6 +1145,10 @@ class SpectrumBatchController:
                             "at_utc": _utc_now(),
                         }
                     )
+
+                if reused_baseline is not None and mode_transition is not None:
+                    reused_baseline["runtime_process_id"] = runtime_ready.process_id
+                    write_json_atomic(self.baseline_path, reused_baseline)
 
                 manifest["state"] = (
                     "WAITING_FOR_SAMPLE"
@@ -1211,7 +1316,14 @@ class SpectrumBatchController:
                 "another process is changing the UV-Vis batch state"
             ) from exc
 
-    def _wait_for_stable_file(self, path: Path) -> Path:
+    def _wait_for_stable_file(
+        self, path: Path, *, stable_seconds: float | None = None
+    ) -> Path:
+        required_stable_seconds = (
+            self.settings.stable_seconds
+            if stable_seconds is None
+            else max(0.0, float(stable_seconds))
+        )
         deadline = time.monotonic() + self.settings.export_timeout_seconds
         previous: tuple[int, int] | None = None
         stable_since: float | None = None
@@ -1229,7 +1341,7 @@ class SpectrumBatchController:
                 previous = signature
                 stable_since = now
             elif stable_since is not None and (
-                now - stable_since >= self.settings.stable_seconds
+                now - stable_since >= required_stable_seconds
             ):
                 return path
             time.sleep(self.settings.poll_interval_seconds)
@@ -1382,7 +1494,13 @@ class SpectrumBatchController:
             )
             self._append_feedback(manifest, client.send_command(320), phase=phase)
             self._append_feedback(manifest, client.send_command(321), phase=phase)
-            self._wait_for_stable_file(raw_path)
+            # Command 320/321 has already closed and committed the .vphd. A
+            # short settle window is sufficient here; the global two-second
+            # export guard was adding avoidable latency before every sample.
+            self._wait_for_stable_file(
+                raw_path,
+                stable_seconds=min(self.settings.stable_seconds, 0.5),
+            )
             normalized = (
                 Path(str(sample["paths"]["export_directory"]))
                 / f"{segment_sample_id}.csv"
@@ -1406,7 +1524,7 @@ class SpectrumBatchController:
                     ),
                     since=started_at,
                     timeout=self.settings.export_timeout_seconds,
-                    stable_seconds=self.settings.stable_seconds,
+                    stable_seconds=min(self.settings.stable_seconds, 0.5),
                 )
                 archived = self._archive_export(
                     export_source,

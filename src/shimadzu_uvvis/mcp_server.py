@@ -1013,10 +1013,14 @@ def create_mcp_server(
             interval_seconds=interval_seconds,
             duration_seconds=duration_seconds,
         )
-        return method_manager(settings).generate(
+        mode_transition = batch_controller(settings).prepare_mode_transition(mode)
+        generated = method_manager(settings).generate(
             request,
             template_name=template_name,
         )
+        if mode_transition is not None:
+            generated = {**generated, "mode_transition": mode_transition}
+        return generated
 
     @server.tool(
         name="plan_uvvis_sample_batch",
