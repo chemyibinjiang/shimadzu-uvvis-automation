@@ -9,6 +9,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping
+from .path_safety import atomic_temporary, local_io_path
 
 
 _ATOMIC_REPLACE_DELAYS_SECONDS = (0.05, 0.1, 0.2, 0.4, 0.8)
@@ -37,13 +38,13 @@ def _replace_with_retry(source: Path, destination: Path) -> None:
 
 
 def write_json_atomic(path: str | Path, payload: Mapping[str, Any]) -> Path:
-    destination = Path(path)
+    destination = local_io_path(Path(path))
     destination.parent.mkdir(parents=True, exist_ok=True)
     # Keep the sibling name deliberately short.  Student/session/batch paths can
     # already be close to the legacy Windows MAX_PATH boundary, and repeating the
     # full destination name plus a UUID made an otherwise valid manifest fail at
     # the temporary-file write.
-    temporary = destination.with_name(f".tmp-{uuid.uuid4().hex[:12]}")
+    temporary = atomic_temporary(destination)
     try:
         temporary.write_text(
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
@@ -53,7 +54,7 @@ def write_json_atomic(path: str | Path, payload: Mapping[str, Any]) -> Path:
         _replace_with_retry(temporary, destination)
     finally:
         temporary.unlink(missing_ok=True)
-    return destination
+    return Path(path)
 
 
 class AuditRecorder:

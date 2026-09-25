@@ -9,7 +9,6 @@ import os
 import re
 import shutil
 import struct
-import uuid
 import zlib
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,6 +17,7 @@ from typing import Sequence
 import olefile
 
 from .audit import write_json_atomic
+from .path_safety import atomic_temporary, local_io_path
 
 
 class PhotometricResultError(RuntimeError):
@@ -651,8 +651,9 @@ def parse_photometric_data_file(
 
 
 def _write_csv(path: Path, points: Sequence[AbsorbancePoint]) -> None:
+    path = local_io_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    temporary = atomic_temporary(path)
     try:
         with temporary.open("w", encoding="utf-8", newline="") as handle:
             writer = csv.writer(handle)
@@ -667,8 +668,9 @@ def _write_csv(path: Path, points: Sequence[AbsorbancePoint]) -> None:
 
 
 def _write_time_course_csv(path: Path, points: Sequence[TimeCoursePoint]) -> None:
+    path = local_io_path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    temporary = atomic_temporary(path)
     try:
         with temporary.open("w", encoding="utf-8", newline="") as handle:
             writer = csv.writer(handle)
@@ -1099,7 +1101,8 @@ def write_spectrum_png(
         + _png_chunk(b"IEND", b"")
     )
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    path = local_io_path(path)
+    temporary = atomic_temporary(path)
     try:
         temporary.write_bytes(content)
         os.replace(temporary, path)
@@ -1163,7 +1166,8 @@ def _build_result_bundle(
             ("result.png", png_file),
         ):
             target = destination / name
-            temporary = target.with_name(f".{name}.{uuid.uuid4().hex}.tmp")
+            target = local_io_path(target)
+            temporary = atomic_temporary(target)
             try:
                 shutil.copy2(source, temporary)
                 os.replace(temporary, target)
@@ -1307,7 +1311,8 @@ def build_time_course_result(
             ("result.png", png_file),
         ):
             target = destination / name
-            temporary = target.with_name(f".{name}.{uuid.uuid4().hex}.tmp")
+            target = local_io_path(target)
+            temporary = atomic_temporary(target)
             try:
                 shutil.copy2(source, temporary)
                 os.replace(temporary, target)

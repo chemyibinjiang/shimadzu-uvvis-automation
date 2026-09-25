@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .audit import write_json_atomic
+from .path_safety import validate_batch_paths
 from .client import Feedback, LabSolutionsClient, LabSolutionsCommandError
 from .configuration import METHOD_FILE_EXTENSIONS, ControlSettings, MeasurementMode
 from .locking import FileLockTimeoutError, InterProcessFileLock
@@ -859,6 +860,10 @@ class SpectrumBatchController:
 
         if execution_confirmed is not True:
             raise SpectrumBatchError("execution_confirmed must be true")
+        try:
+            validate_batch_paths(plan)
+        except ValueError as exc:
+            raise SpectrumBatchError(str(exc)) from exc
         self.data_dir.mkdir(parents=True, exist_ok=True)
         try:
             with self._lock():
@@ -2012,6 +2017,60 @@ class SpectrumBatchController:
             raise SpectrumBatchError(
                 "another process is changing the UV-Vis batch state"
             ) from exc
+
+    def recover_photometric_saved_result(
+        self, batch_id: str, *, student_id: str, experiment_name: str, session_id: str
+    ) -> dict[str, Any]:
+        """Export committed raw segments only; deliberately never create a client."""
+        with self._lock():
+            manifest = self._read_json(self._manifest_path(batch_id))
+            self._validate_optional_batch_owner(
+                manifest, student_id=student_id, experiment_name=experiment_name,
+                session_id=session_id,
+            )
+            self._require_active(manifest)
+            if manifest.get("state") != "RECOVERY_REQUIRED" or manifest.get("mode") != "photometric":
+                raise SpectrumBatchError("saved-result recovery requires a failed Photometric batch")
+            self._validate_methods(manifest)
+            index = int(manifest["next_sample_index"])
+            sample = manifest["samples"][index]
+            sample_id = str(sample["sample_id"])
+            error = manifest.get("last_error") or {}
+            if error.get("operation") != f"measure:{sample_id}" or error.get("type") != "FileNotFoundError":
+                raise SpectrumBatchError("recovery requires the original confirmed export path failure")
+            records = []
+            # Validate ALL segments before writing any derived output.
+            for segment in sample["segments"]:
+                phase = f"sample:{sample_id}:segment:{segment['segment_index']}"
+                commands = [c for c in manifest.get("commands", []) if c.get("phase") == phase]
+                if any(c.get("return_code") != 0 for c in commands):
+                    raise SpectrumBatchError("segment contains a failed command; inspect manually")
+                if not all(any(c.get("command") == required for c in commands) for required in (311, 320, 321)):
+                    raise SpectrumBatchError("measurement and raw commit success are not proven")
+                raw = Path(segment["raw_data_file"])
+                if raw.parent.resolve() != Path(sample["paths"]["raw_directory"]).resolve():
+                    raise SpectrumBatchError("raw file does not belong to this sample directory")
+                completed = next(c for c in commands if c.get("command") == 311)
+                if raw.stat().st_mtime + 2 < datetime.fromisoformat(completed["completed_at_utc"]).timestamp():
+                    raise SpectrumBatchError("raw file predates the confirmed measurement")
+                # Parsing verifies actual wavelength coverage before any export.
+                from .results import parse_photometric_data_file
+                parse_photometric_data_file(raw, expected_wavelengths_nm=segment["wavelengths_nm"])
+            for segment in sample["segments"]:
+                raw = Path(segment["raw_data_file"])
+                exported = Path(sample["paths"]["export_directory"]) / (segment["sample_id"] + ".csv")
+                normalize_photometric_data_file(data_file=raw, expected_wavelengths_nm=segment["wavelengths_nm"], csv_file=exported)
+                records.append({
+                    "segment_index": segment["segment_index"], "sample_id": segment["sample_id"],
+                    "wavelengths_nm": segment["wavelengths_nm"], "method_file": segment["method_file"],
+                    "raw_data": _file_metadata(raw), "export": _file_metadata(exported),
+                    "export_source": str(raw), "result_source_kind": "labsolutions_vphd",
+                })
+            self._build_sample_result(manifest=manifest, sample=sample, segment_records=records, mode="photometric", sample_id=sample_id)
+            manifest.setdefault("recovery_history", []).append(dict(error))
+            manifest["last_error"] = None
+            return self._complete_sample(manifest=manifest, sample=sample, index=index, sample_id=sample_id,
+                                         event_type="sample_result_recovered_from_vphd")
 
     def recover_spectrum_result(
         self,

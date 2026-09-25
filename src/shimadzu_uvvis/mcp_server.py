@@ -15,6 +15,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.types import ToolAnnotations
 
 from .batch_workflow import SpectrumBatchController
+from .path_safety import validate_batch_paths, windows_path_length
 from .configuration import ControlSettings, MeasurementMode, load_settings
 from .measurements import (
     DATA_FILE_EXTENSIONS,
@@ -588,6 +589,13 @@ def build_uvvis_sample_batch_plan(
             if human_readable_results
             else batch_directory / run_sample_id
         )
+        # Preserve readable names when safe; use a collision-resistant mapping
+        # inside the same student's session for long paths. Identity remains in
+        # the plan/manifest, not inferred from this directory name.
+        if windows_path_length(sample_directory / "raw" / (run_sample_id + "_s01.csv")) > 230 or windows_path_length(sample_directory / "raw" / (sample_file_stem + "_s01.vphd")) > 230:
+            short_key = hashlib.sha256((normalized_batch_id + "\0" + run_sample_id).encode()).hexdigest()[:24]
+            sample_directory = results_directory / ("r_" + short_key)
+            sample_file_stem = f"s{sequence_number:03d}"
         normalized_sample_directory = sample_directory.resolve()
         if normalized_sample_directory in sample_directories:
             raise MeasurementPlanError(
@@ -699,6 +707,10 @@ def build_uvvis_sample_batch_plan(
             }
         )
 
+    try:
+        validate_batch_paths({"batch_directory": str(batch_directory), "samples": sample_plans})
+    except ValueError as exc:
+        raise MeasurementPlanError(str(exc)) from exc
     measurement_ready = measurement["execution_readiness"]["ready"]
     batch_checks = {
         "measurement_plan_ready": measurement_ready,
